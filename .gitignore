@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+coverage/
+*.log
+.env
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+.claude/

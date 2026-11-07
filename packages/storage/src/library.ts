@@ -1,0 +1,408 @@
+import {
+  AppError,
+  compareNames,
+  deriveTitle,
+  foldKey,
+  sha256Hex,
+  uuidv7,
+  type DocumentMeta,
+  type DocumentSource,
+  type Folder,
+  type RemoteRef,
+  type Revision,
+  type RevisionReason,
+} from '@mdr/core';
+import type { Backend, Tx } from './backend.ts';
+import { SearchIndex, type SearchHit } from './search.ts';
+
+interface ContentRow {
+  hash: string;
+  text: string;
+}
+
+export interface CreateDocumentInput {
+  text: string;
+  fileName: string;
+  bom?: boolean;
+  source?: DocumentSource;
+  folderId?: string | null;
+  tags?: string[];
+  /** Server-assigned or client-chosen id (sync keeps ids identical on all devices). */
+  id?: string;
+  remote?: RemoteRef | null;
+  reason?: RevisionReason;
+}
+
+export type MetaPatch = Partial<Pick<DocumentMeta, 'title' | 'fileName' | 'folderId' | 'tags' | 'favorite' | 'openedAt' | 'source' | 'remote'>>;
+
+export interface SyncBase {
+  documentId: string;
+  hash: string;
+  text: string;
+}
+
+export type LibraryListener = (documentIds: string[]) => void;
+
+export interface LibraryOptions {
+  libraryId?: string;
+  /** A new revision is cut when the head revision is older than this (ADR-002). */
+  revisionIntervalMs?: number;
+  now?: () => number;
+}
+
+/**
+ * Local library: documents, content-addressed text, revision history, folders and search.
+ * Saves are compare-and-swap on the content hash, so a stale tab or device can never overwrite
+ * newer text silently.
+ */
+export class Library {
+  readonly libraryId: string;
+  private readonly revisionIntervalMs: number;
+  private readonly now: () => number;
+  private readonly index = new SearchIndex();
+  private indexReady: Promise<void> | null = null;
+  private readonly listeners = new Set<LibraryListener>();
+
+  constructor(private readonly backend: Backend, options: LibraryOptions = {}) {
+    this.libraryId = options.libraryId ?? 'local';
+    this.revisionIntervalMs = options.revisionIntervalMs ?? 5 * 60_000;
+    this.now = options.now ?? Date.now;
+  }
+
+  private iso(): string {
+    return new Date(this.now()).toISOString();
+  }
+
+  /** Notified after documents change (content, metadata, trash). Used by sync and the UI. */
+  onChange(listener: LibraryListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(...ids: string[]): void {
+    for (const listener of this.listeners) listener(ids);
+  }
+
+  async listDocuments(options: { includeTrashed?: boolean } = {}): Promise<DocumentMeta[]> {
+    const docs = await this.backend.transaction(['documents'], 'readonly', (tx) => tx.getAll<DocumentMeta>('documents'));
+    return docs.filter((d) => options.includeTrashed || d.deletedAt === null);
+  }
+
+  async getDocument(id: string): Promise<DocumentMeta> {
+    const doc = await this.backend.transaction(['documents'], 'readonly', (tx) => tx.get<DocumentMeta>('documents', id));
+    if (!doc) throw new AppError('document.not_found', { id });
+    return doc;
+  }
+
+  /** Current text and its version (content hash) for compare-and-swap saves. */
+  async readContent(id: string): Promise<{ text: string; version: string; meta: DocumentMeta }> {
+    return this.backend.transaction(['documents', 'contents'], 'readonly', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      const content = await tx.get<ContentRow>('contents', meta.contentHash);
+      if (!content) throw new AppError('storage.failed', { id, reason: 'missing_content' });
+      return { text: content.text, version: meta.contentHash, meta };
+    });
+  }
+
+  async createDocument(input: CreateDocumentInput): Promise<DocumentMeta> {
+    const hash = await sha256Hex(input.text);
+    const now = this.iso();
+    const id = input.id ?? uuidv7(this.now());
+    const revision: Revision = {
+      id: uuidv7(this.now()),
+      documentId: id,
+      parentRevisionId: null,
+      contentHash: hash,
+      size: input.text.length,
+      authorId: null,
+      reason: input.reason ?? 'import',
+      createdAt: now,
+    };
+    const meta: DocumentMeta = {
+      id,
+      libraryId: this.libraryId,
+      folderId: input.folderId ?? null,
+      title: deriveTitle(input.text, input.fileName) || input.fileName,
+      fileName: input.fileName,
+      source: input.source ?? { kind: 'imported' },
+      headRevisionId: revision.id,
+      contentHash: hash,
+      bom: input.bom ?? false,
+      tags: normalizeTags(input.tags ?? []),
+      favorite: false,
+      createdAt: now,
+      updatedAt: now,
+      openedAt: null,
+      deletedAt: null,
+      remote: input.remote ?? null,
+    };
+    await this.backend.transaction(['documents', 'contents', 'revisions'], 'readwrite', async (tx) => {
+      if (await tx.get('documents', id)) throw new AppError('storage.failed', { id, reason: 'duplicate_id' });
+      await tx.put<ContentRow>('contents', { hash, text: input.text });
+      await tx.put('revisions', revision);
+      await tx.put('documents', meta);
+    });
+    this.index.upsert(id, meta.title, input.text);
+    this.emit(id);
+    return meta;
+  }
+
+  /**
+   * Saves `text` if the stored version still equals `baseVersion`; otherwise throws
+   * `file.external_change`. Returns the new version.
+   */
+  async saveContent(id: string, text: string, baseVersion: string, reason: RevisionReason = 'edit'): Promise<string> {
+    const hash = await sha256Hex(text);
+    const nowMs = this.now();
+    const now = new Date(nowMs).toISOString();
+    const meta = await this.backend.transaction(['documents', 'contents', 'revisions'], 'readwrite', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      if (meta.contentHash !== baseVersion) {
+        throw new AppError('file.external_change', { id, expected: baseVersion, actual: meta.contentHash });
+      }
+      if (hash === baseVersion) return meta;
+
+      await tx.put<ContentRow>('contents', { hash, text });
+      const head = await tx.get<Revision>('revisions', meta.headRevisionId);
+      const cutNew = !head || reason !== 'edit' || head.reason !== 'edit' || nowMs - Date.parse(head.createdAt) >= this.revisionIntervalMs;
+      if (cutNew) {
+        const revision: Revision = {
+          id: uuidv7(nowMs),
+          documentId: id,
+          parentRevisionId: head?.id ?? null,
+          contentHash: hash,
+          size: text.length,
+          authorId: null,
+          reason,
+          createdAt: now,
+        };
+        await tx.put('revisions', revision);
+        meta.headRevisionId = revision.id;
+      } else {
+        // Group rapid edits into the open head revision; its content row is replaced.
+        const previous = head.contentHash;
+        await tx.put('revisions', { ...head, contentHash: hash, size: text.length });
+        await this.dropContentIfUnreferenced(tx, previous, id);
+      }
+      meta.contentHash = hash;
+      meta.updatedAt = now;
+      const title = deriveTitle(text, meta.fileName);
+      if (title) meta.title = title;
+      await tx.put('documents', meta);
+      return meta;
+    });
+    this.index.upsert(id, meta.title, text);
+    this.emit(id);
+    return hash;
+  }
+
+  async updateMeta(id: string, patch: MetaPatch): Promise<DocumentMeta> {
+    const next = await this.backend.transaction(['documents'], 'readwrite', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      const next: DocumentMeta = { ...meta, ...patch, tags: patch.tags ? normalizeTags(patch.tags) : meta.tags };
+      if (patch.title !== undefined || patch.fileName !== undefined || patch.folderId !== undefined || patch.tags !== undefined) {
+        next.updatedAt = this.iso();
+      }
+      await tx.put('documents', next);
+      return next;
+    });
+    // `openedAt` alone is bookkeeping, not a change worth syncing or re-rendering for.
+    if (Object.keys(patch).some((k) => k !== 'openedAt')) this.emit(id);
+    return next;
+  }
+
+  async trash(id: string): Promise<void> {
+    await this.setDeleted(id, this.iso());
+    this.index.remove(id);
+    this.emit(id);
+  }
+
+  async restore(id: string): Promise<void> {
+    await this.setDeleted(id, null);
+    const { text, meta } = await this.readContent(id);
+    this.index.upsert(id, meta.title, text);
+    this.emit(id);
+  }
+
+  /** Permanently deletes a trashed document with all revisions and unreferenced contents. */
+  async purge(id: string): Promise<void> {
+    await this.backend.transaction(['documents', 'contents', 'revisions', 'syncBases'], 'readwrite', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) return;
+      if (meta.deletedAt === null) throw new AppError('storage.failed', { id, reason: 'not_trashed' });
+      const revisions = await tx.revisionsOf<Revision>(id);
+      await tx.delete('documents', id);
+      for (const r of revisions) await tx.delete('revisions', r.id);
+      for (const hash of new Set(revisions.map((r) => r.contentHash))) await this.dropContentIfUnreferenced(tx, hash, null);
+      await tx.delete('syncBases', id);
+    });
+    this.index.remove(id);
+    this.emit(id);
+  }
+
+  /** Last text known to be identical on the server (common ancestor for merges). */
+  async getSyncBase(id: string): Promise<SyncBase | null> {
+    return (await this.backend.transaction(['syncBases'], 'readonly', (tx) => tx.get<SyncBase>('syncBases', id))) ?? null;
+  }
+
+  async putSyncBase(base: SyncBase): Promise<void> {
+    await this.backend.transaction(['syncBases'], 'readwrite', (tx) => tx.put('syncBases', base));
+  }
+
+  async deleteSyncBase(id: string): Promise<void> {
+    await this.backend.transaction(['syncBases'], 'readwrite', (tx) => tx.delete('syncBases', id));
+  }
+
+  async getSetting<T>(key: string): Promise<T | null> {
+    const row = await this.backend.transaction(['settings'], 'readonly', (tx) => tx.get<{ key: string; value: T }>('settings', key));
+    return row?.value ?? null;
+  }
+
+  async putSetting<T>(key: string, value: T | null): Promise<void> {
+    await this.backend.transaction(['settings'], 'readwrite', (tx) => (value === null ? tx.delete('settings', key) : tx.put('settings', { key, value })));
+  }
+
+  async listRevisions(id: string): Promise<Revision[]> {
+    const revisions = await this.backend.transaction(['revisions'], 'readonly', (tx) => tx.revisionsOf<Revision>(id));
+    return revisions.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  }
+
+  async readRevision(revisionId: string): Promise<string> {
+    return this.backend.transaction(['revisions', 'contents'], 'readonly', async (tx) => {
+      const revision = await tx.get<Revision>('revisions', revisionId);
+      if (!revision) throw new AppError('document.not_found', { revisionId });
+      const content = await tx.get<ContentRow>('contents', revision.contentHash);
+      if (!content) throw new AppError('storage.failed', { revisionId, reason: 'missing_content' });
+      return content.text;
+    });
+  }
+
+  /** Restores an old revision as a *new* head revision; history is never rewritten. */
+  async restoreRevision(id: string, revisionId: string): Promise<string> {
+    const text = await this.readRevision(revisionId);
+    const { version } = await this.readContent(id);
+    return this.saveContent(id, text, version, 'restore');
+  }
+
+  async listFolders(): Promise<Folder[]> {
+    const folders = await this.backend.transaction(['folders'], 'readonly', (tx) => tx.getAll<Folder>('folders'));
+    return folders.filter((f) => f.deletedAt === null);
+  }
+
+  async createFolder(name: string, parentId: string | null = null): Promise<Folder> {
+    const folder: Folder = { id: uuidv7(this.now()), libraryId: this.libraryId, parentId, name: name.trim(), createdAt: this.iso(), deletedAt: null };
+    if (!folder.name) throw new AppError('storage.failed', { reason: 'empty_name' });
+    await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
+      const siblings = (await tx.getAll<Folder>('folders')).filter((f) => f.parentId === parentId && f.deletedAt === null);
+      if (siblings.some((f) => foldKey(f.name) === foldKey(folder.name))) {
+        throw new AppError('storage.failed', { reason: 'duplicate_name' });
+      }
+      await tx.put('folders', folder);
+    });
+    return folder;
+  }
+
+  async renameFolder(id: string, name: string): Promise<void> {
+    await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
+      const folder = await tx.get<Folder>('folders', id);
+      if (!folder) throw new AppError('document.not_found', { id });
+      await tx.put('folders', { ...folder, name: name.trim() });
+    });
+  }
+
+  /** Moves a folder; refuses to create cycles. */
+  async moveFolder(id: string, parentId: string | null): Promise<void> {
+    await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
+      const all = await tx.getAll<Folder>('folders');
+      const byId = new Map(all.map((f) => [f.id, f]));
+      for (let cur = parentId; cur !== null; cur = byId.get(cur)?.parentId ?? null) {
+        if (cur === id) throw new AppError('storage.failed', { reason: 'folder_cycle' });
+      }
+      const folder = byId.get(id);
+      if (!folder) throw new AppError('document.not_found', { id });
+      await tx.put('folders', { ...folder, parentId });
+    });
+  }
+
+  /** Trashes a folder and everything below it. */
+  async trashFolder(id: string): Promise<void> {
+    const now = this.iso();
+    const trashedDocs = await this.backend.transaction(['folders', 'documents'], 'readwrite', async (tx) => {
+      const folders = await tx.getAll<Folder>('folders');
+      const ids = new Set([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const f of folders) if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) {
+          ids.add(f.id);
+          grew = true;
+        }
+      }
+      for (const f of folders) if (ids.has(f.id)) await tx.put('folders', { ...f, deletedAt: now });
+      const docs = (await tx.getAll<DocumentMeta>('documents')).filter((d) => d.folderId && ids.has(d.folderId) && d.deletedAt === null);
+      for (const d of docs) await tx.put('documents', { ...d, deletedAt: now });
+      return docs.map((d) => d.id);
+    });
+    for (const docId of trashedDocs) this.index.remove(docId);
+    this.emit(...trashedDocs);
+  }
+
+  async listTags(locale: string): Promise<Array<{ tag: string; count: number }>> {
+    // Tags compare case-insensitively; the first spelling seen is displayed.
+    const counts = new Map<string, { tag: string; count: number }>();
+    for (const doc of await this.listDocuments()) {
+      for (const tag of doc.tags) {
+        const entry = counts.get(foldKey(tag));
+        if (entry) entry.count++;
+        else counts.set(foldKey(tag), { tag, count: 1 });
+      }
+    }
+    return [...counts.values()].sort((a, b) => compareNames(a.tag, b.tag, locale));
+  }
+
+  async search(query: string, limit?: number): Promise<SearchHit[]> {
+    await this.ensureIndex();
+    return this.index.search(query, limit);
+  }
+
+  /** Builds the search index lazily from stored contents (first search after startup). */
+  private ensureIndex(): Promise<void> {
+    this.indexReady ??= (async () => {
+      const docs = await this.listDocuments();
+      for (const doc of docs) {
+        const { text } = await this.readContent(doc.id);
+        this.index.upsert(doc.id, doc.title, text);
+      }
+    })();
+    return this.indexReady;
+  }
+
+  private async setDeleted(id: string, deletedAt: string | null): Promise<void> {
+    await this.backend.transaction(['documents'], 'readwrite', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      await tx.put('documents', { ...meta, deletedAt });
+    });
+  }
+
+  private async dropContentIfUnreferenced(tx: Tx, hash: string, exceptDocument: string | null): Promise<void> {
+    // Contents are shared across documents (dedup), so check every revision and document head.
+    const docs = await tx.getAll<DocumentMeta>('documents');
+    if (docs.some((d) => d.contentHash === hash && d.id !== exceptDocument)) return;
+    const revisions = await tx.getAll<Revision>('revisions');
+    if (revisions.some((r) => r.contentHash === hash)) return;
+    await tx.delete('contents', hash);
+  }
+}
+
+function normalizeTags(tags: string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const raw of tags) {
+    const tag = raw.normalize('NFC').trim().replace(/^#/, '');
+    if (tag && !seen.has(foldKey(tag))) seen.set(foldKey(tag), tag);
+  }
+  return [...seen.values()];
+}

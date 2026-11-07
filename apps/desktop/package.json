@@ -1,0 +1,26 @@
+{
+  "name": "@mdr/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config vite.config.ts",
+    "build": "vite build --config vite.config.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@mdr/core": "*",
+    "@mdr/i18n": "*",
+    "@mdr/markdown-engine": "*",
+    "@mdr/platform": "*",
+    "@mdr/storage": "*",
+    "@mdr/ui": "*",
+    "@tauri-apps/api": "^2.12.4",
+    "katex": "^0.19.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

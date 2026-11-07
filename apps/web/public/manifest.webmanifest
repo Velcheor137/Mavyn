@@ -1,0 +1,16 @@
+{
+  "name": "Mavyn",
+  "short_name": "Mavyn",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbfbfc",
+  "theme_color": "#5e6ad2",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "file_handlers": [
+    { "action": "/", "accept": { "text/markdown": [".md", ".markdown"] } }
+  ],
+  "launch_handler": { "client_mode": "focus-existing" }
+}

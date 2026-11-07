@@ -1,0 +1,32 @@
+[package]
+name = "mdr-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mdr-domain = { path = "../../crates/domain" }
+mdr-sync-protocol = { path = "../../crates/sync-protocol" }
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["limit", "trace", "set-header", "fs"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "macros", "migrate", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+argon2 = { version = "0.5", features = ["std"] }
+sha2 = "0.10"
+hex = "0.4"
+getrandom = "0.3"
+base64 = "0.22"
+unicode-normalization = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+
+[lints]
+workspace = true

@@ -1,0 +1,30 @@
+{
+  "name": "@mdr/markdown-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@mdr/core": "*",
+    "github-slugger": "^2.0.0",
+    "hast-util-sanitize": "^5.0.2",
+    "hast-util-to-string": "^3.0.1",
+    "katex": "^0.19.1",
+    "mdast-util-from-markdown": "^2.1.0",
+    "rehype-katex": "^7.0.1",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "rehype-stringify": "^10.0.1",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gemoji": "^8.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.2.0",
+    "vfile": "^6.0.3"
+  }
+}
