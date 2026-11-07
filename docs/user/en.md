@@ -20,6 +20,23 @@ use *Export → Markdown* to keep copies.
     offers to load the newer version or save yours as a copy.
 - Drag `.md` files onto the window to copy them into the library.
 
+## Organizing the library
+
+Use **New folder** beside Folders to create a root folder. The folder's **…** menu
+offers **New subfolder**, **Rename folder** and **Move folder**. Expand/collapse arrows
+show nested folders. Names must be unique within the same parent (case-insensitive).
+Move dialogs exclude the folder itself and its descendants.
+
+In the document's **More actions** menu, **Rename** edits the library file name and
+**Move to folder** chooses a destination, including **Library root**. Text and version
+history stay intact. A heading-derived document title does not change when renaming.
+Linked files keep their names and locations on disk.
+
+Folder structure stays local. Moving an already synced document does not disconnect
+it from its server library. Moving a local document directly into the configured sync
+folder uploads it; subfolders are not enrolled automatically. Filename-only renames
+are currently local metadata and may be replaced by a subsequent server refresh.
+
 ## Reading and editing
 
 - Switch **Read / Source / Split** in the document toolbar (Ctrl+E toggles read/source).
@@ -72,8 +89,9 @@ the same form is under Settings → Server.
 
 1. Settings → **Server** → sign in with the account your administrator created.
 2. Choose a server library (or create one) and press **Start syncing**.
-3. The library appears as a folder of the same name. Everything in that folder syncs; documents
-   elsewhere stay on this device only.
+3. The library appears as a folder of the same name. Local documents directly in that folder
+   are enrolled in sync. Once enrolled, they continue syncing even if moved elsewhere locally.
+   Other local documents and nested folder structure stay on this device.
 
 The status next to *Settings* shows Synced, Waiting to sync, Syncing, Offline or Conflict; click it
 to sync now. You can keep working offline — changes upload when the connection returns.

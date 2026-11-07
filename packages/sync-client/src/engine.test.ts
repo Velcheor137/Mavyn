@@ -54,6 +54,41 @@ describe('SyncEngine', () => {
     expect(b.connection.cursor).not.toBe('');
   });
 
+  it('preserves a local move made while the initial upload is in flight and keeps syncing', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const destination = await a.library.createFolder('Elsewhere');
+    const doc = await a.library.createDocument({ text: 'first', fileName: 'move.md', folderId: a.folder.id });
+    const api = server.client();
+    let release!: () => void;
+    let signalStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const refreshed: string[] = [];
+    const engine = new SyncEngine(a.library, {
+      ...api,
+      createDocument: async (...args) => {
+        const result = await api.createDocument(...args);
+        signalStarted();
+        await gate;
+        return result;
+      },
+    }, a.connection, { saveConnection: async () => {}, onRemoteChange: (ids) => refreshed.push(...ids), random: () => 0 });
+    const syncing = engine.syncNow();
+    await started;
+    await a.library.updateMeta(doc.id, { folderId: destination.id });
+    release();
+    await syncing;
+    expect((await a.library.getDocument(doc.id)).folderId).toBe(destination.id);
+    expect(refreshed).toContain(doc.id);
+    expect((await a.library.getDocument(doc.id)).remote?.baseRevisionId).toBe(server.docs.get(doc.id)?.head_revision_id);
+    await a.edit(doc.id, 'second');
+    await engine.syncNow();
+    expect(server.docs.get(doc.id)?.content).toBe('second');
+    expect((await a.library.getDocument(doc.id)).folderId).toBe(destination.id);
+    engine.stop();
+  });
+
   it('fast-forwards unmodified copies and pushes local edits', async () => {
     const server = new FakeServer();
     const a = await device(server, 'a');

@@ -1,0 +1,89 @@
+import { toAppError, type DocumentMeta, type ErrorCode, type Folder } from '@mdr/core';
+import { useTranslation } from '@mdr/i18n';
+import { useId, useState, type FormEvent } from 'react';
+import { useServices } from '../services.tsx';
+import { useSync } from '../sync.ts';
+import { refreshLibrary, useWorkspace } from '../workspace.ts';
+import { descendantIds, folderPaths } from './folders.ts';
+import { Field, Modal } from './primitives.tsx';
+
+export type LibraryAction =
+  | { kind: 'createFolder'; parentId: string | null }
+  | { kind: 'renameFolder' | 'moveFolder'; folder: Folder }
+  | { kind: 'renameDocument' | 'moveDocument'; document: DocumentMeta };
+
+/** Mounted per action so initial input never leaks from a previous document/folder. */
+export function LibraryDialog({ action, onClose }: { action: LibraryAction; onClose(): void }) {
+  const { t, i18n } = useTranslation();
+  const { library } = useServices();
+  const folders = useWorkspace((s) => s.folders);
+  const documents = useWorkspace((s) => s.documents);
+  const currentDocument = 'document' in action ? documents.find((doc) => doc.id === action.document.id) ?? action.document : null;
+  const connection = useSync((s) => s.connection);
+  const id = useId();
+  const [name, setName] = useState('folder' in action ? action.folder.name : 'document' in action ? action.document.fileName : '');
+  const [destination, setDestination] = useState(
+    action.kind === 'createFolder' ? action.parentId ?? '' : 'folder' in action ? action.folder.parentId ?? '' : action.document.folderId ?? '',
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ErrorCode | null>(null);
+  const moving = action.kind === 'moveFolder' || action.kind === 'moveDocument';
+  const showDestination = moving || action.kind === 'createFolder';
+  const excluded = action.kind === 'moveFolder' ? descendantIds(folders, action.folder.id) : new Set<string>();
+  const choices = folderPaths(folders, i18n.language).filter(({ folder }) => !excluded.has(folder.id));
+  const titleKeys = { createFolder: 'sidebar.newFolder', renameFolder: 'folders.rename', moveFolder: 'folders.move', renameDocument: 'document.rename', moveDocument: 'document.move' } as const;
+  const title = t(titleKeys[action.kind]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy || (!moving && !name.trim())) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const parentId = destination || null;
+      switch (action.kind) {
+        case 'createFolder': {
+          const folder = await library.createFolder(name, parentId);
+          useWorkspace.setState({ section: { kind: 'folder', folderId: folder.id } });
+          break;
+        }
+        case 'renameFolder': await library.renameFolder(action.folder.id, name); break;
+        case 'moveFolder': await library.moveFolder(action.folder.id, parentId); break;
+        case 'renameDocument': await library.updateMeta(action.document.id, { fileName: name.trim() }); break;
+        case 'moveDocument': await library.updateMeta(action.document.id, { folderId: parentId }); break;
+      }
+      await refreshLibrary();
+      onClose();
+    } catch (cause) {
+      setError(toAppError(cause).code);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open onOpenChange={(open) => { if (!open && !busy) onClose(); }} title={title} closeLabel={t('folders.cancel')}>
+      <form className="grid gap-3" onSubmit={(event) => void submit(event)}>
+        {!moving && <Field label={action.kind === 'renameDocument' ? t('document.fileName') : t('sidebar.folderName')} htmlFor={`${id}-name`}>
+          <input id={`${id}-name`} className="input" value={name} onChange={(event) => setName(event.currentTarget.value)} disabled={busy} required autoFocus />
+        </Field>}
+        {showDestination && <Field label={t('folders.destination')} htmlFor={`${id}-destination`}>
+          <select id={`${id}-destination`} className="input" value={destination} onChange={(event) => setDestination(event.currentTarget.value)} disabled={busy}>
+            <option value="">{t('folders.root')}</option>
+            {choices.map(({ folder, path }) => <option key={folder.id} value={folder.id}>{path}</option>)}
+          </select>
+        </Field>}
+        {'document' in action && <p className="muted small">{t('folders.localOnlyHint')}</p>}
+        {action.kind === 'moveDocument' && currentDocument?.remote && <p className="muted small">{t('folders.syncedHint')}</p>}
+        {action.kind === 'moveDocument' && !currentDocument?.remote && connection?.folderId === destination && <p className="text-danger small" role="note">{t('folders.uploadHint')}</p>}
+        {error && <p className="text-danger small" role="alert">{t(`errors.${error}` as 'errors.unknown')}</p>}
+        <div className="flex gap-2 justify-end">
+          <button type="button" className="button" disabled={busy} onClick={onClose}>{t('folders.cancel')}</button>
+          <button type="submit" className="button button-primary" disabled={busy || (!moving && !name.trim())}>
+            {busy ? t('folders.saving') : moving ? t('folders.moveAction') : action.kind === 'createFolder' ? t('folders.create') : t('folders.save')}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

@@ -67,7 +67,9 @@
     "dropHint": "Drop Markdown files to add them",
     "more": "More actions",
     "fullscreen": "Focus mode",
-    "exitFullscreen": "Exit focus mode"
+    "exitFullscreen": "Exit focus mode",
+    "move": "Move to folder",
+    "fileName": "File name"
   },
   "save": {
     "saved": "Saved",
@@ -264,7 +266,11 @@
     "setup.already_completed": "The server is already set up. Sign in instead.",
     "user.weak_password": "The password must be at least 10 characters long.",
     "user.invalid_username": "Use 3–64 letters, digits, dots, hyphens or underscores.",
-    "user.username_taken": "This username is already taken."
+    "user.username_taken": "This username is already taken.",
+    "folder.not_found": "The folder no longer exists. Choose another destination.",
+    "folder.invalid_name": "Enter a folder name.",
+    "folder.duplicate_name": "A folder with this name already exists here.",
+    "folder.cycle": "A folder cannot be moved inside itself or its subfolders."
   },
   "a11y": {
     "toggleSidebar": "Toggle sidebar",
@@ -309,5 +315,23 @@
     "nextStep": "Now choose a server library to sync with this device.",
     "close": "Done",
     "openSetup": "Create administrator"
+  },
+  "folders": {
+    "actions": "Folder actions: {{name}}",
+    "newChild": "New subfolder",
+    "rename": "Rename folder",
+    "move": "Move folder",
+    "destination": "Destination",
+    "root": "Library root",
+    "expand": "Expand {{name}}",
+    "collapse": "Collapse {{name}}",
+    "create": "Create folder",
+    "save": "Save",
+    "moveAction": "Move",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "localOnlyHint": "This changes library organization only. Linked files on disk keep their names and locations.",
+    "syncedHint": "This document continues syncing with its server library after moving.",
+    "uploadHint": "Documents placed directly in this folder are uploaded to the connected server library."
   }
 }

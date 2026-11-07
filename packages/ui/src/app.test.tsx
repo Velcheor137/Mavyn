@@ -1,4 +1,7 @@
-import { act, cleanup, fireEvent, render as renderDom, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderDom, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom/vitest';
+import { refreshLibrary } from './workspace.ts';
 import { createI18n, I18nextProvider } from '@mdr/i18n';
 import { render } from '@mdr/markdown-engine';
 import type { PlatformAdapter } from '@mdr/platform';
@@ -82,6 +85,89 @@ describe('AppShell', () => {
     act(() => usePreferences.getState().set({ locale: 'ru' }));
     await waitFor(() => expect(screen.getAllByText('Новый документ').length).toBeGreaterThan(0));
     expect(document.documentElement.lang).toBe('ru');
+  });
+
+  it('creates nested folders, collapses them, rejects duplicate rename and moves them', async () => {
+    const user = userEvent.setup();
+    const { library } = await setup('# Local\n');
+    const parent = await library.createFolder('Projects');
+    await act(() => refreshLibrary());
+    await user.click(screen.getByRole('button', { name: 'Folder actions: Projects' }));
+    await user.click(screen.getByRole('menuitem', { name: 'New subfolder' }));
+    let dialog = screen.getByRole('dialog', { name: 'New folder' });
+    await user.type(within(dialog).getByLabelText('Folder name'), 'Drafts');
+    await user.click(within(dialog).getByRole('button', { name: 'Create folder' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const child = (await library.listFolders()).find((f) => f.name === 'Drafts')!;
+    expect(child.parentId).toBe(parent.id);
+    await user.click(screen.getByRole('button', { name: 'Collapse Projects' }));
+    expect(screen.queryByRole('button', { name: 'Folder actions: Drafts' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Expand Projects' }));
+
+    await library.createFolder('Taken', parent.id);
+    await act(() => refreshLibrary());
+    await user.click(screen.getByRole('button', { name: 'Folder actions: Drafts' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Rename folder' }));
+    dialog = screen.getByRole('dialog', { name: 'Rename folder' });
+    const input = within(dialog).getByLabelText('Folder name');
+    await user.clear(input);
+    await user.type(input, 'Taken');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('A folder with this name already exists here.');
+    expect(input).toHaveValue('Taken');
+    await user.clear(input);
+    await user.type(input, 'Ready');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: 'Folder actions: Ready' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Move folder' }));
+    dialog = screen.getByRole('dialog', { name: 'Move folder' });
+    expect(within(dialog).queryByRole('option', { name: /Ready/ })).toBeNull();
+    await user.selectOptions(within(dialog).getByLabelText('Destination'), '');
+    await user.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(async () => expect((await library.listFolders()).find((f) => f.id === child.id)?.parentId).toBeNull());
+  });
+
+  it('renames and moves a document without changing source or history', async () => {
+    const user = userEvent.setup();
+    const source = '# Keep\r\n\r\n- [ ] task\r\n';
+    const { library, id } = await setup(source);
+    const parent = await library.createFolder('Проекты');
+    const child = await library.createFolder('Работа', parent.id);
+    await act(() => refreshLibrary());
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    let dialog = screen.getByRole('dialog', { name: 'Rename' });
+    const input = within(dialog).getByLabelText('File name');
+    await user.clear(input);
+    await user.type(input, 'заметки.md');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect((await library.getDocument(id)).fileName).toBe('заметки.md');
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Move to folder' }));
+    dialog = screen.getByRole('dialog', { name: 'Move to folder' });
+    await user.selectOptions(within(dialog).getByLabelText('Destination'), child.id);
+    await user.click(within(dialog).getByRole('button', { name: 'Move' }));
+    await waitFor(async () => expect((await library.getDocument(id)).folderId).toBe(child.id));
+    expect((await library.readContent(id)).text).toBe(source);
+    expect(await library.listRevisions(id)).toHaveLength(1);
+    act(() => usePreferences.getState().set({ locale: 'ru' }));
+    expect(await screen.findByRole('button', { name: 'Действия с папкой: Работа' })).toBeTruthy();
+  });
+
+  it('updates the move warning when a document becomes synced while its dialog is open', async () => {
+    const user = userEvent.setup();
+    const { library, id } = await setup('# Local\n');
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Move to folder' }));
+    const dialog = screen.getByRole('dialog', { name: 'Move to folder' });
+    const hint = 'This document continues syncing with its server library after moving.';
+    expect(within(dialog).queryByText(hint)).toBeNull();
+    await library.updateMeta(id, { remote: { serverId: 'server', libraryId: 'remote', baseRevisionId: 'r', baseHash: 'h', conflict: null } });
+    await act(() => refreshLibrary());
+    expect(within(dialog).getByText(hint)).toBeTruthy();
   });
 
   it('renders untrusted HTML inert and keeps raw-HTML checkboxes non-interactive', async () => {

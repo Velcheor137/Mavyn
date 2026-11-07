@@ -4,12 +4,13 @@ import { Clock, FileText, Files, FolderOpen, FolderPlus, Hash, Plus, RotateCcw, 
 import { useMemo, useState, type ReactNode } from 'react';
 import { useRelativeTime } from '../hooks.ts';
 import { SyncStatus } from './SyncStatus.tsx';
-import { useServices } from '../services.tsx';
-import { openDocument, purgeDocument, restoreDocument, search, useWorkspace, notifyError, refreshLibrary, type Section } from '../workspace.ts';
+import { FolderTree } from './FolderTree.tsx';
+import { LibraryDialog, type LibraryAction } from './LibraryDialogs.tsx';
+import { openDocument, purgeDocument, restoreDocument, search, useWorkspace, notifyError, type Section } from '../workspace.ts';
 
 export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDocument(): void; onOpenFile(): void; onOpenSettings(): void }) {
   const { t, i18n } = useTranslation();
-  const { library } = useServices();
+  const [action, setAction] = useState<LibraryAction | null>(null);
   const documents = useWorkspace((s) => s.documents);
   const folders = useWorkspace((s) => s.folders);
   const section = useWorkspace((s) => s.section);
@@ -54,17 +55,6 @@ export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDo
   const setSection = (next: Section) => useWorkspace.setState({ section: next });
   const isSection = (kind: Section['kind'], key?: string) =>
     section.kind === kind && (key === undefined || (section.kind === 'tag' && section.tag === key) || (section.kind === 'folder' && section.folderId === key));
-
-  const createFolder = async () => {
-    const name = window.prompt(t('sidebar.folderName'));
-    if (!name?.trim()) return;
-    try {
-      await library.createFolder(name);
-      await refreshLibrary();
-    } catch (error) {
-      notifyError(error);
-    }
-  };
 
   const byId = new Map(documents.map((d) => [d.id, d]));
 
@@ -127,25 +117,11 @@ export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDo
 
           <div className="sidebar-heading-row">
             <p className="sidebar-heading">{t('sidebar.folders')}</p>
-            <button type="button" className="icon-button small" onClick={() => void createFolder()} aria-label={t('sidebar.newFolder')} title={t('sidebar.newFolder')}>
+            <button type="button" className="icon-button small" onClick={() => setAction({ kind: 'createFolder', parentId: null })} aria-label={t('sidebar.newFolder')} title={t('sidebar.newFolder')}>
               <FolderPlus size={13} aria-hidden />
             </button>
           </div>
-          <ul className="nav-list">
-            {[...folders]
-              .filter((f) => f.parentId === null)
-              .sort((a, b) => compareNames(a.name, b.name, locale))
-              .map((folder) => (
-                <NavItem
-                  key={folder.id}
-                  icon={<FolderOpen size={15} aria-hidden />}
-                  label={folder.name}
-                  count={live.filter((d) => d.folderId === folder.id).length}
-                  active={isSection('folder', folder.id)}
-                  onClick={() => setSection({ kind: 'folder', folderId: folder.id })}
-                />
-              ))}
-          </ul>
+          <FolderTree folders={folders} documents={live} onAction={setAction} />
 
           {tags.length > 0 && (
             <>
@@ -175,6 +151,7 @@ export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDo
         </button>
         <SyncStatus />
       </div>
+      {action && <LibraryDialog action={action} onClose={() => setAction(null)} />}
     </nav>
   );
 }

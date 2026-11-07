@@ -137,7 +137,8 @@ export class Library {
       deletedAt: null,
       remote: input.remote ?? null,
     };
-    await this.backend.transaction(['documents', 'contents', 'revisions'], 'readwrite', async (tx) => {
+    await this.backend.transaction(['documents', 'contents', 'revisions', 'folders'], 'readwrite', async (tx) => {
+      await this.requireFolder(tx, meta.folderId);
       if (await tx.get('documents', id)) throw new AppError('storage.failed', { id, reason: 'duplicate_id' });
       await tx.put<ContentRow>('contents', { hash, text: input.text });
       await tx.put('revisions', revision);
@@ -199,9 +200,10 @@ export class Library {
   }
 
   async updateMeta(id: string, patch: MetaPatch): Promise<DocumentMeta> {
-    const next = await this.backend.transaction(['documents'], 'readwrite', async (tx) => {
+    const next = await this.backend.transaction(['documents', 'folders'], 'readwrite', async (tx) => {
       const meta = await tx.get<DocumentMeta>('documents', id);
       if (!meta) throw new AppError('document.not_found', { id });
+      if (patch.folderId !== undefined) await this.requireFolder(tx, patch.folderId);
       const next: DocumentMeta = { ...meta, ...patch, tags: patch.tags ? normalizeTags(patch.tags) : meta.tags };
       if (patch.title !== undefined || patch.fileName !== undefined || patch.folderId !== undefined || patch.tags !== undefined) {
         next.updatedAt = this.iso();
@@ -270,10 +272,12 @@ export class Library {
     return revisions.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   }
 
-  async readRevision(revisionId: string): Promise<string> {
+  async readRevision(revisionId: string, documentId?: string): Promise<string> {
     return this.backend.transaction(['revisions', 'contents'], 'readonly', async (tx) => {
       const revision = await tx.get<Revision>('revisions', revisionId);
-      if (!revision) throw new AppError('document.not_found', { revisionId });
+      if (!revision || (documentId !== undefined && revision.documentId !== documentId)) {
+        throw new AppError('document.not_found', { revisionId });
+      }
       const content = await tx.get<ContentRow>('contents', revision.contentHash);
       if (!content) throw new AppError('storage.failed', { revisionId, reason: 'missing_content' });
       return content.text;
@@ -282,7 +286,7 @@ export class Library {
 
   /** Restores an old revision as a *new* head revision; history is never rewritten. */
   async restoreRevision(id: string, revisionId: string): Promise<string> {
-    const text = await this.readRevision(revisionId);
+    const text = await this.readRevision(revisionId, id);
     const { version } = await this.readContent(id);
     return this.saveContent(id, text, version, 'restore');
   }
@@ -293,13 +297,9 @@ export class Library {
   }
 
   async createFolder(name: string, parentId: string | null = null): Promise<Folder> {
-    const folder: Folder = { id: uuidv7(this.now()), libraryId: this.libraryId, parentId, name: name.trim(), createdAt: this.iso(), deletedAt: null };
-    if (!folder.name) throw new AppError('storage.failed', { reason: 'empty_name' });
+    const folder: Folder = { id: uuidv7(this.now()), libraryId: this.libraryId, parentId, name: name.normalize('NFC').trim(), createdAt: this.iso(), deletedAt: null };
     await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
-      const siblings = (await tx.getAll<Folder>('folders')).filter((f) => f.parentId === parentId && f.deletedAt === null);
-      if (siblings.some((f) => foldKey(f.name) === foldKey(folder.name))) {
-        throw new AppError('storage.failed', { reason: 'duplicate_name' });
-      }
+      await this.validateFolder(tx, folder);
       await tx.put('folders', folder);
     });
     return folder;
@@ -307,9 +307,10 @@ export class Library {
 
   async renameFolder(id: string, name: string): Promise<void> {
     await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
-      const folder = await tx.get<Folder>('folders', id);
-      if (!folder) throw new AppError('document.not_found', { id });
-      await tx.put('folders', { ...folder, name: name.trim() });
+      const folder = (await this.requireFolder(tx, id))!;
+      const next = { ...folder, name: name.normalize('NFC').trim() };
+      await this.validateFolder(tx, next);
+      await tx.put('folders', next);
     });
   }
 
@@ -318,12 +319,15 @@ export class Library {
     await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
       const all = await tx.getAll<Folder>('folders');
       const byId = new Map(all.map((f) => [f.id, f]));
+      const visited = new Set([id]);
       for (let cur = parentId; cur !== null; cur = byId.get(cur)?.parentId ?? null) {
-        if (cur === id) throw new AppError('storage.failed', { reason: 'folder_cycle' });
+        if (visited.has(cur)) throw new AppError('folder.cycle', { reason: 'folder_cycle' });
+        visited.add(cur);
       }
-      const folder = byId.get(id);
-      if (!folder) throw new AppError('document.not_found', { id });
-      await tx.put('folders', { ...folder, parentId });
+      const folder = (await this.requireFolder(tx, id))!;
+      const next = { ...folder, parentId };
+      await this.validateFolder(tx, next);
+      await tx.put('folders', next);
     });
   }
 
@@ -378,6 +382,24 @@ export class Library {
       }
     })();
     return this.indexReady;
+  }
+
+  private async requireFolder(tx: Tx, id: string | null): Promise<Folder | null> {
+    if (id === null) return null;
+    const folder = await tx.get<Folder>('folders', id);
+    if (!folder || folder.deletedAt !== null || folder.libraryId !== this.libraryId) {
+      throw new AppError('folder.not_found', { id });
+    }
+    return folder;
+  }
+
+  private async validateFolder(tx: Tx, folder: Folder): Promise<void> {
+    if (!folder.name) throw new AppError('folder.invalid_name');
+    await this.requireFolder(tx, folder.parentId);
+    const all = await tx.getAll<Folder>('folders');
+    if (all.some((f) => f.id !== folder.id && f.libraryId === folder.libraryId && f.parentId === folder.parentId && f.deletedAt === null && foldKey(f.name) === foldKey(folder.name))) {
+      throw new AppError('folder.duplicate_name');
+    }
   }
 
   private async setDeleted(id: string, deletedAt: string | null): Promise<void> {

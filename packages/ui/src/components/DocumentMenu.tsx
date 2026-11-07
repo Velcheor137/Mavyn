@@ -3,7 +3,9 @@ import { encodeUtf8 } from '@mdr/core';
 import { useTranslation } from '@mdr/i18n';
 import { renderToHtml } from '@mdr/markdown-engine';
 import * as Menu from '@radix-ui/react-dropdown-menu';
-import { FileCode, FileDown, MoreHorizontal, Pencil, Printer, Star, StarOff, Trash2 } from 'lucide-react';
+import { FileCode, FileDown, FolderInput, MoreHorizontal, Pencil, Printer, Star, StarOff, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { LibraryDialog, type LibraryAction } from './LibraryDialogs.tsx';
 import { usePreferences } from '../preferences.ts';
 import { useServices } from '../services.tsx';
 import { trashDocument, updateDocument } from '../workspace.ts';
@@ -12,6 +14,7 @@ import { buildStandaloneHtml } from '../export.ts';
 export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: DocumentSession }) {
   const { t } = useTranslation();
   const { platform } = useServices();
+  const [action, setAction] = useState<LibraryAction | null>(null);
   const profile = usePreferences((p) => p.profile);
   const allowHtml = usePreferences((p) => p.allowHtml);
   const baseName = meta.fileName.replace(/\.[^.]+$/, '') || 'document';
@@ -22,12 +25,8 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
     const html = buildStandaloneHtml(meta.title, body, document.documentElement.lang || 'en');
     void platform.saveAs(`${baseName}.html`, new TextEncoder().encode(html), 'text/html;charset=utf-8');
   };
-  const rename = () => {
-    const title = window.prompt(t('document.rename'), meta.fileName);
-    if (title && title.trim()) void updateDocument(meta.id, { fileName: title.trim() });
-  };
-
   return (
+    <>
     <Menu.Root>
       <Menu.Trigger className="icon-button" aria-label={t('document.more')} title={t('document.more')}>
         <MoreHorizontal size={16} aria-hidden />
@@ -38,9 +37,13 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
             {meta.favorite ? <StarOff size={15} aria-hidden /> : <Star size={15} aria-hidden />}
             {meta.favorite ? t('document.unfavorite') : t('document.favorite')}
           </Menu.Item>
-          <Menu.Item className="menu-item" onSelect={rename}>
+          <Menu.Item className="menu-item" onSelect={() => setAction({ kind: 'renameDocument', document: meta })}>
             <Pencil size={15} aria-hidden />
             {t('document.rename')}
+          </Menu.Item>
+          <Menu.Item className="menu-item" onSelect={() => setAction({ kind: 'moveDocument', document: meta })}>
+            <FolderInput size={15} aria-hidden />
+            {t('document.move')}
           </Menu.Item>
           <Menu.Separator className="menu-separator" />
           <Menu.Label className="menu-label">{t('document.export')}</Menu.Label>
@@ -64,5 +67,7 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
         </Menu.Content>
       </Menu.Portal>
     </Menu.Root>
+    {action && <LibraryDialog action={action} onClose={() => setAction(null)} />}
+    </>
   );
 }

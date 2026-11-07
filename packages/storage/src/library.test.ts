@@ -56,6 +56,19 @@ for (const [name, makeBackend] of backends) {
       expect((await library.listRevisions(meta.id)).map((r) => r.reason)).toEqual(['restore', 'edit', 'import']);
     });
 
+    it('rejects restoring a revision belonging to another document without changing either history', async () => {
+      const { library } = await setup();
+      const target = await library.createDocument({ text: 'keep target', fileName: 'target.md' });
+      const other = await library.createDocument({ text: 'other content', fileName: 'other.md' });
+      const before = await library.listRevisions(target.id);
+
+      await expect(library.restoreRevision(target.id, other.headRevisionId)).rejects.toMatchObject({ code: 'document.not_found' });
+      expect((await library.readContent(target.id)).text).toBe('keep target');
+      expect((await library.readContent(other.id)).text).toBe('other content');
+      expect(await library.listRevisions(target.id)).toEqual(before);
+      expect(await library.listRevisions(other.id)).toHaveLength(1);
+    });
+
     it('trashes, restores and purges', async () => {
       const { library } = await setup();
       const meta = await library.createDocument({ text: 'bye', fileName: 'a.md' });
@@ -89,6 +102,61 @@ for (const [name, makeBackend] of backends) {
       await library.trashFolder(root.id);
       expect(await library.listFolders()).toHaveLength(0);
       expect((await library.getDocument(doc.id)).deletedAt).not.toBeNull();
+    });
+
+    it('rejects blank and duplicate names when renaming folders', async () => {
+      const { library } = await setup();
+      const first = await library.createFolder('Проекты');
+      const second = await library.createFolder('Other');
+      await expect(library.renameFolder(second.id, '  ')).rejects.toMatchObject({ code: 'folder.invalid_name' });
+      await expect(library.renameFolder(second.id, ' проекты ')).rejects.toMatchObject({ code: 'folder.duplicate_name' });
+      expect((await library.listFolders()).find((f) => f.id === second.id)?.name).toBe('Other');
+      await library.renameFolder(first.id, ' Проекты ');
+      expect((await library.listFolders()).find((f) => f.id === first.id)?.name).toBe('Проекты');
+    });
+
+    it('rejects duplicate sibling names on move and preserves the source parent', async () => {
+      const { library } = await setup();
+      const root = await library.createFolder('Root');
+      await library.createFolder('Café', root.id);
+      const moving = await library.createFolder('Cafe\u0301');
+      await expect(library.moveFolder(moving.id, root.id)).rejects.toMatchObject({ code: 'folder.duplicate_name' });
+      expect((await library.listFolders()).find((f) => f.id === moving.id)?.parentId).toBeNull();
+    });
+
+    it('rejects missing and trashed folder destinations for folders and documents', async () => {
+      const { library } = await setup();
+      const moving = await library.createFolder('Keep');
+      const deleted = await library.createFolder('Deleted');
+      await library.trashFolder(deleted.id);
+      const doc = await library.createDocument({ text: 'unchanged', fileName: 'keep.md' });
+      for (const parentId of ['missing', deleted.id]) {
+        await expect(library.createFolder('New', parentId)).rejects.toMatchObject({ code: 'folder.not_found' });
+        await expect(library.moveFolder(moving.id, parentId)).rejects.toMatchObject({ code: 'folder.not_found' });
+        await expect(library.createDocument({ text: 'orphan', fileName: 'orphan.md', folderId: parentId })).rejects.toMatchObject({ code: 'folder.not_found' });
+        await expect(library.updateMeta(doc.id, { folderId: parentId })).rejects.toMatchObject({ code: 'folder.not_found' });
+      }
+      expect(await library.listDocuments()).toHaveLength(1);
+      expect((await library.getDocument(doc.id)).folderId).toBeNull();
+      expect((await library.readContent(doc.id)).text).toBe('unchanged');
+      expect(await library.listFolders()).toHaveLength(1);
+    });
+
+    it('moves folders and documents without rewriting content, history or remote refs', async () => {
+      const { library } = await setup();
+      const a = await library.createFolder('A');
+      const b = await library.createFolder('B');
+      const child = await library.createFolder('Child', a.id);
+      const remote = { serverId: 'server', libraryId: 'remote', baseRevisionId: 'r', baseHash: 'h', conflict: null };
+      const doc = await library.createDocument({ text: 'keep\r\n', fileName: 'keep.md', folderId: child.id, remote });
+      await library.moveFolder(child.id, b.id);
+      await library.updateMeta(doc.id, { folderId: b.id });
+      expect((await library.listFolders()).find((f) => f.id === child.id)?.parentId).toBe(b.id);
+      expect((await library.getDocument(doc.id)).remote).toEqual(remote);
+      expect((await library.readContent(doc.id)).text).toBe('keep\r\n');
+      expect(await library.listRevisions(doc.id)).toHaveLength(1);
+      await library.updateMeta(doc.id, { folderId: null });
+      expect((await library.getDocument(doc.id)).folderId).toBeNull();
     });
 
     it('searches Russian and English with folding and prefixes', async () => {

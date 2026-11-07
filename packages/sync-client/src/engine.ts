@@ -362,9 +362,11 @@ export class SyncEngine {
       return;
     }
     await this.applying_(async () => {
-      await this.library.updateMeta(doc.id, { remote: this.remoteRef(info), folderId: this.connection.folderId });
+      // Local organization may have changed while the create request was in flight.
+      await this.library.updateMeta(doc.id, { remote: this.remoteRef(info) });
       await this.library.putSyncBase({ documentId: doc.id, hash: info.content_hash, text });
     });
+    changed.add(doc.id);
   }
 
   private async pushUpdate(doc: DocumentMeta, changed: Set<string>, depth: number): Promise<void> {
