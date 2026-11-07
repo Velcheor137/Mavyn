@@ -1,18 +1,24 @@
 import 'fake-indexeddb/auto';
 import { AppError, sha256Hex } from '@mdr/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { IndexedDbBackend, Library, MemoryBackend, SearchIndex, type Backend } from './index.ts';
+import { nativeTestBackend } from '../../../tests/native-bridge.ts';
 
 let dbCounter = 0;
 const backends: Array<[string, () => Promise<Backend>]> = [
   ['memory', async () => new MemoryBackend()],
   ['indexeddb', () => IndexedDbBackend.open(`test-${++dbCounter}`)],
 ];
+if (process.env.MAVYN_STORAGE_BRIDGE) backends.push(['sqlite-rust', async () => nativeTestBackend()]);
 
 for (const [name, makeBackend] of backends) {
   describe(`Library on ${name}`, () => {
+    const opened: Backend[] = [];
+    afterEach(() => { for (const backend of opened.splice(0)) backend.close(); });
     async function setup(now = { t: Date.parse('2026-01-01T00:00:00Z') }) {
-      const library = new Library(await makeBackend(), { now: () => now.t, revisionIntervalMs: 60_000 });
+      const backend = await makeBackend();
+      opened.push(backend);
+      const library = new Library(backend, { now: () => now.t, revisionIntervalMs: 60_000 });
       return { library, now };
     }
 
@@ -67,6 +73,46 @@ for (const [name, makeBackend] of backends) {
       expect((await library.readContent(other.id)).text).toBe('other content');
       expect(await library.listRevisions(target.id)).toEqual(before);
       expect(await library.listRevisions(other.id)).toHaveLength(1);
+    });
+
+    it('keeps all history by default and persists the selected retention policy', async () => {
+      const { library } = await setup();
+      expect(await library.getHistoryRetention()).toBe('all');
+      await library.setHistoryRetention('balanced');
+      expect(await library.getHistoryRetention()).toBe('balanced');
+      await library.setHistoryRetention('all');
+      const doc = await library.createDocument({ text: 'original', fileName: 'history.md' });
+      await library.saveContent(doc.id, 'edited', doc.contentHash);
+      expect(await library.pruneHistory()).toBe(0);
+      expect(await library.listRevisions(doc.id)).toHaveLength(2);
+    });
+
+    it('prunes old history into daily buckets while preserving initial/head, trash and shared contents', async () => {
+      const end = Date.parse('2026-11-07T12:00:00Z');
+      const day = 86_400_000;
+      const { library, now } = await setup({ t: end - 400 * day });
+      const doc = await library.createDocument({ text: 'initial', fileName: 'history.md' });
+      now.t = end - 399 * day;
+      let version = await library.saveContent(doc.id, 'old shared', doc.contentHash);
+      const shared = await library.createDocument({ text: 'old shared', fileName: 'shared.md' });
+      now.t = end - 40 * day;
+      version = await library.saveContent(doc.id, 'earlier same day', version);
+      now.t += 3_600_000;
+      version = await library.saveContent(doc.id, 'daily survivor', version);
+      now.t = end - 5 * day;
+      version = await library.saveContent(doc.id, 'recent', version);
+      now.t = end;
+      await library.saveContent(doc.id, 'head', version);
+      await library.trash(shared.id);
+      await library.setHistoryRetention('balanced');
+      expect(await library.pruneHistory()).toBe(2);
+      const kept = await library.listRevisions(doc.id);
+      expect(await Promise.all(kept.map((revision) => library.readRevision(revision.id)))).toEqual(['head', 'recent', 'daily survivor', 'initial']);
+      expect(kept[2]?.parentRevisionId).toBe(kept[3]?.id);
+      expect((await library.readContent(shared.id)).text).toBe('old shared');
+      expect(await library.listRevisions(shared.id)).toHaveLength(1);
+      await library.restoreRevision(doc.id, kept[2]!.id);
+      expect((await library.readContent(doc.id)).text).toBe('daily survivor');
     });
 
     it('trashes, restores and purges', async () => {

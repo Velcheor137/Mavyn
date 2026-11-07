@@ -1,0 +1,21 @@
+[package]
+name = "mavyn-local-store"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+# Native SQLite resolves independently from the server's SQLx SQLite dependency.
+[workspace]
+
+[dependencies]
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+unicode-normalization = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+
+[lints.rust]
+unsafe_code = "forbid"

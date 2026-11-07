@@ -14,6 +14,7 @@ import {
 } from '@mdr/core';
 import type { Backend, Tx } from './backend.ts';
 import { SearchIndex, type SearchHit } from './search.ts';
+import { HISTORY_RETENTION_KEY, retainedRevisions, type HistoryRetention } from './retention.ts';
 
 interface ContentRow {
   hash: string;
@@ -59,12 +60,13 @@ export class Library {
   readonly libraryId: string;
   private readonly revisionIntervalMs: number;
   private readonly now: () => number;
-  private readonly index = new SearchIndex();
+  private readonly index: SearchIndex | null;
   private indexReady: Promise<void> | null = null;
   private readonly listeners = new Set<LibraryListener>();
 
   constructor(private readonly backend: Backend, options: LibraryOptions = {}) {
     this.libraryId = options.libraryId ?? 'local';
+    this.index = backend.search ? null : new SearchIndex();
     this.revisionIntervalMs = options.revisionIntervalMs ?? 5 * 60_000;
     this.now = options.now ?? Date.now;
   }
@@ -144,7 +146,7 @@ export class Library {
       await tx.put('revisions', revision);
       await tx.put('documents', meta);
     });
-    this.index.upsert(id, meta.title, input.text);
+    this.index?.upsert(id, meta.title, input.text);
     this.emit(id);
     return meta;
   }
@@ -194,7 +196,7 @@ export class Library {
       await tx.put('documents', meta);
       return meta;
     });
-    this.index.upsert(id, meta.title, text);
+    this.index?.upsert(id, meta.title, text);
     this.emit(id);
     return hash;
   }
@@ -218,14 +220,14 @@ export class Library {
 
   async trash(id: string): Promise<void> {
     await this.setDeleted(id, this.iso());
-    this.index.remove(id);
+    this.index?.remove(id);
     this.emit(id);
   }
 
   async restore(id: string): Promise<void> {
     await this.setDeleted(id, null);
     const { text, meta } = await this.readContent(id);
-    this.index.upsert(id, meta.title, text);
+    this.index?.upsert(id, meta.title, text);
     this.emit(id);
   }
 
@@ -241,7 +243,7 @@ export class Library {
       for (const hash of new Set(revisions.map((r) => r.contentHash))) await this.dropContentIfUnreferenced(tx, hash, null);
       await tx.delete('syncBases', id);
     });
-    this.index.remove(id);
+    this.index?.remove(id);
     this.emit(id);
   }
 
@@ -270,6 +272,59 @@ export class Library {
   async listRevisions(id: string): Promise<Revision[]> {
     const revisions = await this.backend.transaction(['revisions'], 'readonly', (tx) => tx.revisionsOf<Revision>(id));
     return revisions.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  }
+
+  async getHistoryRetention(): Promise<HistoryRetention> {
+    return (await this.getSetting<unknown>(HISTORY_RETENTION_KEY)) === 'balanced' ? 'balanced' : 'all';
+  }
+
+  async setHistoryRetention(policy: HistoryRetention): Promise<void> {
+    if (policy !== 'all' && policy !== 'balanced') throw new AppError('storage.failed');
+    await this.putSetting(HISTORY_RETENTION_KEY, policy);
+  }
+
+  /** Explicit maintenance only. A policy change alone never deletes history. */
+  async pruneHistory(): Promise<number> {
+    return this.backend.transaction(['settings', 'documents', 'revisions', 'contents'], 'readwrite', async (tx) => {
+      const policy = await tx.get<{ value: unknown }>('settings', HISTORY_RETENTION_KEY);
+      if (policy?.value !== 'balanced') return 0;
+      const docs = await tx.getAll<DocumentMeta>('documents');
+      const revisions = await tx.getAll<Revision>('revisions');
+      const byDocument = new Map<string, Revision[]>();
+      for (const revision of revisions) {
+        const group = byDocument.get(revision.documentId) ?? [];
+        group.push(revision);
+        byDocument.set(revision.documentId, group);
+      }
+      const removed = new Set<string>();
+      const hashes = new Set<string>();
+      for (const doc of docs) {
+        if (doc.deletedAt !== null) continue;
+        const group = byDocument.get(doc.id) ?? [];
+        const keep = retainedRevisions(group, doc.headRevisionId, this.now());
+        const byId = new Map(group.map((revision) => [revision.id, revision]));
+        for (const revision of group) {
+          if (!keep.has(revision.id)) {
+            await tx.delete('revisions', revision.id);
+            removed.add(revision.id);
+            hashes.add(revision.contentHash);
+          } else {
+            let parent = revision.parentRevisionId;
+            const visited = new Set([revision.id]);
+            while (parent && !keep.has(parent) && !visited.has(parent)) {
+              visited.add(parent);
+              parent = byId.get(parent)?.parentRevisionId ?? null;
+            }
+            if (parent && visited.has(parent)) parent = null;
+            if (parent !== revision.parentRevisionId) await tx.put('revisions', { ...revision, parentRevisionId: parent });
+          }
+        }
+      }
+      // Shared content remains while any document head or retained revision references it.
+      const referenced = new Set([...docs.map((doc) => doc.contentHash), ...revisions.filter((r) => !removed.has(r.id)).map((r) => r.contentHash)]);
+      for (const hash of hashes) if (!referenced.has(hash)) await tx.delete('contents', hash);
+      return removed.size;
+    });
   }
 
   async readRevision(revisionId: string, documentId?: string): Promise<string> {
@@ -350,7 +405,7 @@ export class Library {
       for (const d of docs) await tx.put('documents', { ...d, deletedAt: now });
       return docs.map((d) => d.id);
     });
-    for (const docId of trashedDocs) this.index.remove(docId);
+    for (const docId of trashedDocs) this.index?.remove(docId);
     this.emit(...trashedDocs);
   }
 
@@ -368,8 +423,9 @@ export class Library {
   }
 
   async search(query: string, limit?: number): Promise<SearchHit[]> {
+    if (this.backend.search) return this.backend.search(query, limit);
     await this.ensureIndex();
-    return this.index.search(query, limit);
+    return this.index!.search(query, limit);
   }
 
   /** Builds the search index lazily from stored contents (first search after startup). */
@@ -378,7 +434,7 @@ export class Library {
       const docs = await this.listDocuments();
       for (const doc of docs) {
         const { text } = await this.readContent(doc.id);
-        this.index.upsert(doc.id, doc.title, text);
+        this.index?.upsert(doc.id, doc.title, text);
       }
     })();
     return this.indexReady;

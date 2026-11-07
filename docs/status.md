@@ -1,7 +1,28 @@
 # Status
 
-Last updated: 2026-11-07. Development machine: Debian 13 x86_64, Node 22.23, Docker 29;
+Last updated: 2026-11-08. Development machine: Debian 13 x86_64, Node 22.23, Docker 29;
 no host Rust toolchain, no WebKitGTK, no Android SDK, ~12 GB RAM.
+
+## Native storage continuation — 2026-11-08
+
+- Desktop is now wired to `crates/local-store`: SQLite/WAL/synchronous FULL, fixed app-data
+  path, versioned schema, scoped tokenized transactions and a proactive idle-lease reaper.
+- FTS5 updates atomically with document/content/trash changes. Search folds NFC/case/ё,
+  uses quoted AND-prefix queries and does not build a second JS text index on native.
+- Legacy webview IndexedDB migration is all-or-nothing into an empty SQLite database;
+  the original is retained. Interruption/retry and nonempty-destination refusal are tested.
+- History settings default to keep-all. Explicit confirmed cleanup keeps 30 days of
+  revisions plus daily snapshots for a year, protecting initial/head/trash/shared content.
+- Both native and web linked saves always compare content hashes, including equal
+  file size/mtime. This is fingerprint protection, not an exclusive lock against other apps.
+- Verified on Windows + Ubuntu 26.04 WSL: Node 22.23.0 strict TypeScript, 168 Vitest
+  tests (including the shared Library suite through the real Rust SQLite bridge),
+  web and desktop frontend production builds. Rust 1.93.1 local-store: 10 tests,
+  fmt and Clippy with warnings denied. Whole-shell Linux compilation is recorded separately
+  once its dependency/build check completes. No native GUI launch or Android device test.
+- One-time legacy migration currently allocates a consistent snapshot of the old database;
+  memory requirements for very large libraries remain unmeasured. Windows native compilation,
+  real filesystem dialogs and Android SAF are still pending.
 
 ## Windows continuation — 2026-11-07
 
@@ -50,7 +71,11 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 
 ## Test counts
 
-- Vitest: 143 passing — core 22, markdown-engine 54 (task offsets 10, rendering/callouts 13, sanitization 31 incl. 26 XSS payloads), i18n 7, storage 29 (memory + IndexedDB, v1→v2 upgrade), platform 4, editor 5, sync-client 14, ui 8.
+- Vitest: 168 passing with the native bridge enabled — core 22, markdown-engine 54, i18n 7,
+  storage 51 (Memory + IndexedDB + real Rust/SQLite, migration), platform 5, editor 5,
+  sync-client 14, ui 10. Without the native bridge: 150 passing and 3 migration tests skipped.
+- Native local-store: 10 Rust tests (leases, durable storage/rollback, FTS5, migration marker,
+  schema protection, linked-file saving).
 - Rust: domain 3, server unit 6, API integration 10, desktop shell 1.
 
 ## Phase progress (see plan.md)
@@ -61,7 +86,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | 2 Design system + localization | Done for the web app: themes, accent, reading prefs, responsive layout, full en/ru, runtime switching |
 | 3 Markdown reader | Done: GFM, footnotes, emoji, math, Mermaid (zoom/pan/export SVG), callouts, Shiki, TOC, reading progress, lightbox. Relative local images: placeholder only on web |
 | 4 Editor + tasks | Done: reader/source/split, exact-source checkbox edits, undo/redo across autosave, stale-edit rejection, conflict banner |
-| 5 Local library | Partial: imported + linked (File System Access) files, nested folders with create/rename/move UI, document rename/move, tags, favorites, recents, trash, search, revisions/diff/restore. Missing: SQLite/FTS5 native store, Android SAF, revision retention policy |
+| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Missing: Android SAF and real native app/device validation |
 | 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, revisions, change feed, search, compose, web sign-in. Missing: folders/attachments endpoints, user/member management UI |
 | 7 Sync + offline | Web ↔ server done (one library ↔ one local folder): incremental pull, CAS push, idempotent retries, three-way merge, conflict UI, tombstones, revoked access, sign-out. Missing: desktop/Android sync (bearer token in secure storage), attachments, QR-assisted connection, offline PWA verification |
 | 8 Polish | Partial: Markdown/HTML export and print stylesheet. Missing: PDF beyond print dialog, axe audit, measured performance budgets, Playwright E2E |

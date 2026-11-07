@@ -35,6 +35,10 @@ Rust (server/crates) tests and clippy run in Docker when no host toolchain is av
 `docs/testing.md`. ESLint is not configured yet; `tsc` strict mode and clippy `-D warnings` are
 the enforced static checks.
 
+Native storage has an independent Cargo workspace because server SQLx links a different SQLite
+version. Test it with `cargo test --manifest-path crates/local-store/Cargo.toml`; see
+`docs/testing.md` for the real SQLite bridge that also runs the shared TypeScript library suite.
+
 ## Rules
 
 1. Read existing code before changing it; match its style.

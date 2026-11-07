@@ -7,8 +7,14 @@
   that works offline.
 - **Windows / Linux / Android apps:** not released yet.
 
-Your documents are stored **in this browser on this device**. Clearing site data deletes them;
+In the web version, documents are stored **in this browser on this device**. Clearing site data deletes them;
 use *Export → Markdown* to keep copies.
+
+Native development builds store the library in `library.sqlite3` in the application's data
+directory. Close the previous app version before upgrading. First startup copies the previous webview library into SQLite and keeps the original
+IndexedDB database as a backup. Failed imports do not replace existing data. For a native database
+backup, close every app window/process before copying the complete app data directory, including
+any SQLite `-wal`/`-shm` files; do not copy only the database file while the app is running.
 
 ## Basics
 
@@ -46,6 +52,14 @@ are currently local metadata and may be replaced by a subsequent server refresh.
 - Double-click a block in the reader (split view) to jump to its source line.
 - **Version history** (clock icon) shows earlier versions with changes; *Restore* creates a new
   version, nothing is lost.
+
+## Keeping history
+
+Settings → **Version history** → **History retention** defaults to **Keep all revisions**.
+The balanced policy keeps every revision from the last 30 days and then the latest per UTC day
+for a year. Initial/current versions and the history of documents in Trash stay protected.
+Selecting a policy does not delete anything. **Clean up history** asks for confirmation before
+permanently removing old revisions; current document text remains unchanged.
 
 ## Supported Markdown
 

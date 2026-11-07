@@ -14,13 +14,16 @@ English and Russian interface.
   matching), keeps CRLF/LF and all other bytes intact, and refuses stale edits.
 - GFM, footnotes, emoji, math (KaTeX), Mermaid, callouts, Shiki highlighting, sanitized raw HTML.
 - Search across documents (Russian and English, case/`ё` folding, prefix matching).
+- Native SQLite library with transactional FTS5 indexing and non-destructive legacy migration;
+  the shared storage engine is tested under Linux/WSL. Native application launch remains unverified.
+- Explicit history cleanup with configurable retention; keep-all is the default.
 - Light/dark/system theme, accent color, reading preferences; instant en ↔ ru switching.
 - API server (Rust/Axum/PostgreSQL): setup-token bootstrap, login sessions, libraries with
   roles, documents with compare-and-swap revisions, idempotent writes, change feed, search.
 - Sync between the web app and the server it is served from: offline-first, automatic merging of
   non-overlapping edits, conflict resolution UI (keep mine / use server / keep both).
 
-Not yet: desktop/Android sync and builds verified on real systems, SQLite store, attachments,
+Not yet: desktop/Android sync and builds verified on real systems, Android SAF, attachments,
 PDF export beyond the browser's print dialog. See the status page.
 
 ## Quick start (development)

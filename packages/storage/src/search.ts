@@ -89,7 +89,7 @@ export class SearchIndex {
   }
 }
 
-function makeSnippet(text: string, folded: string, terms: string[], radius = 60): { snippet: string; ranges: Array<[number, number]> } {
+export function makeSnippet(text: string, folded: string, terms: string[], radius = 60): { snippet: string; ranges: Array<[number, number]> } {
   // foldKey preserves length for the scripts we care about (NFC lowercase, ё→е); if it did not,
   // fall back to an unhighlighted prefix rather than misplacing highlights.
   if (folded.length !== text.length) return { snippet: text.slice(0, radius * 2), ranges: [] };

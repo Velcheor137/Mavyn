@@ -43,7 +43,7 @@ Rules:
 
 | Concern | Web/PWA | Desktop (Win/Linux) | Android |
 |---|---|---|---|
-| Managed storage | IndexedDB (documents, revisions, outbox) | SQLite in app data dir (Rust) — *planned; currently the webview's IndexedDB* | SQLite in app data dir — *planned* |
+| Managed storage | IndexedDB (documents, revisions, sync bases) | SQLite in app data dir through Rust local-store | Same SQLite engine wired; Android build/device verification pending |
 | Linked files | File System Access API where available (Chromium); otherwise import-only + "save as" download | Real paths via Rust commands, atomic save | SAF `content://` URIs with persisted permissions; copy/save-as fallback |
 | Full-text search | In-memory inverted index built in a worker from IndexedDB, persisted per identity | SQLite FTS5 (`unicode61 remove_diacritics 2`) + prefix queries | same as desktop |
 | Secrets | HttpOnly cookie session; nothing in JS storage | OS keyring (keyring crate) | Android Keystore-backed storage |
@@ -80,8 +80,10 @@ Text invariants:
 Revision grouping (ADR-002): autosave writes the working copy immediately; a new `Revision` row is
 cut when (a) 5 minutes of edits have accumulated, (b) the editor is idle ≥ 60 s after changes,
 (c) the document is closed, (d) before sync upload, or (e) a checkbox toggle follows a period of
-no edits (toggles are coalesced over 10 s). Retention is configurable (default: keep all for 30
-days, then one per day for a year).
+no edits (toggles are coalesced over 10 s). Retention is configurable, defaulting to **keep all**.
+Explicit balanced cleanup retains all versions from the last 30 days and the latest per UTC
+day for a year. Initial/current revisions and all history of trashed documents stay protected.
+Changing the policy does not delete anything; cleanup requires confirmation in Settings.
 
 ## 5. Markdown pipeline (ADR-003)
 
@@ -123,9 +125,30 @@ and composes with concurrent edits) or to the working copy otherwise; both paths
 
 ## 6. Storage and saving
 
+Native managed storage (`crates/local-store`, independent Cargo workspace): bundled SQLite in
+`<app_data_dir>/library.sqlite3`, WAL, synchronous FULL, schema `user_version=1`. Fixed store/key
+JSON records preserve the existing domain model. A partial SQLite index accelerates revisions
+by document. FTS5 uses `unicode61 remove_diacritics 2`, prefix indexes, NFC/case/ё folding and
+quoted AND-prefix queries; refresh happens in the same transaction as document/content writes.
+Native search returns only bounded matching candidates; it does not build the JS library index.
+
+`NativeBackend` receives an injected transport, with no Tauri dependency in shared packages.
+The only IPC entry is `local_store`: scoped begin/get/all/revisions/put/delete/commit/rollback,
+search and migration status/marker operations. Rust chooses the path; callers cannot execute
+arbitrary SQL. Transactions have opaque UUID tokens, readonly enforcement and a 60-second idle
+lease. The native StoreHost runs a weak-reference background reaper so an abandoned transaction
+releases its file lock without another frontend request. SQLite rolls back on connection loss.
+
+On first start, a consistent readonly snapshot of the legacy webview IndexedDB library is
+copied into an empty native database in one SQLite transaction, together with an internal
+completion marker. The source database remains intact as a backup. Failed imports roll back
+and can retry. A nonempty native database without a migration marker is treated as an explicit
+conflict, never overwritten or merged implicitly. The one-time snapshot currently needs memory
+proportional to the old database; large migration budgets remain unmeasured.
+
 Native (Rust): atomic save = write `name.tmp-<uuid>` in the same directory → `fsync` → rename over
-original (`ReplaceFileW` on Windows) → `fsync` directory (Unix). Before saving a linked file, the
-stored `(mtime, size, hash)` fingerprint is compared; mismatch → `external_change` conflict, never
+original (`std::fs::rename`) → `fsync` directory (Unix). Before saving a linked file, the
+stored content hash is compared even when mtime/size are unchanged; mismatch → `external_change` conflict, never
 overwrite. Android SAF: write via `ContentResolver.openOutputStream(uri, "wt")`; providers that do
 not support truncation get a save-as fallback.
 

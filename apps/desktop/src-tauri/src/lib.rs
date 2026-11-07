@@ -3,13 +3,13 @@
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use mavyn_local_store::files::{write_atomic, write_linked_checked};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -34,12 +34,12 @@ pub struct PickedFile {
 /// Error codes match `packages/core/src/errors.ts`.
 #[derive(Debug, Serialize)]
 pub struct CommandError {
-    code: &'static str,
+    code: String,
 }
 
 impl CommandError {
-    fn new(code: &'static str) -> Self {
-        Self { code }
+    fn new(code: impl Into<String>) -> Self {
+        Self { code: code.into() }
     }
 }
 
@@ -61,10 +61,25 @@ struct Allowed {
     launch_files: Mutex<Vec<PathBuf>>,
 }
 
+/// The path is fixed by setup; the webview can only send scoped store operations.
+#[tauri::command]
+async fn local_store(
+    storage: State<'_, Arc<mavyn_local_store::StoreHost>>,
+    request: serde_json::Value,
+) -> CmdResult<serde_json::Value> {
+    let storage = Arc::clone(storage.inner());
+    tauri::async_runtime::spawn_blocking(move || storage.handle(request).map_err(CommandError::new))
+        .await
+        .map_err(|_| CommandError::new("storage.failed"))?
+}
+
 impl Allowed {
     fn allow(&self, path: &Path) -> CmdResult<PathBuf> {
         let canonical = fs::canonicalize(path)?;
-        let mut paths = self.paths.lock().map_err(|_| CommandError::new("unknown"))?;
+        let mut paths = self
+            .paths
+            .lock()
+            .map_err(|_| CommandError::new("unknown"))?;
         if paths.insert(canonical.clone()) {
             let list: Vec<_> = paths.iter().collect();
             if let Ok(json) = serde_json::to_vec(&list) {
@@ -76,9 +91,14 @@ impl Allowed {
     }
 
     fn check(&self, locator: &str) -> CmdResult<PathBuf> {
-        let path = locator.strip_prefix("path:").ok_or(CommandError::new("file.not_found"))?;
+        let path = locator
+            .strip_prefix("path:")
+            .ok_or(CommandError::new("file.not_found"))?;
         let canonical = fs::canonicalize(path)?;
-        let paths = self.paths.lock().map_err(|_| CommandError::new("unknown"))?;
+        let paths = self
+            .paths
+            .lock()
+            .map_err(|_| CommandError::new("unknown"))?;
         if paths.contains(&canonical) {
             Ok(canonical)
         } else {
@@ -89,37 +109,27 @@ impl Allowed {
 
 fn fingerprint_of(path: &Path, bytes: &[u8]) -> CmdResult<Fingerprint> {
     let meta = fs::metadata(path)?;
-    let modified_ms = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
-    Ok(Fingerprint { size: meta.len(), modified_ms, content_hash: hex::encode(Sha256::digest(bytes)) })
-}
-
-/// Crash-safe write: temp file in the same directory → fsync → rename over the target → fsync dir.
-fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{}.{}.tmp", target.file_name().and_then(|n| n.to_str()).unwrap_or("file"), uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        // On Windows std::fs::rename replaces the destination (MoveFileExW + REPLACE_EXISTING).
-        fs::rename(&tmp, target)?;
-        #[cfg(unix)]
-        File::open(dir)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+    let modified_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64);
+    Ok(Fingerprint {
+        size: meta.len(),
+        modified_ms,
+        content_hash: hex::encode(Sha256::digest(bytes)),
+    })
 }
 
 fn read_picked(allowed: &Allowed, path: &Path) -> CmdResult<PickedFile> {
     let canonical = allowed.allow(path)?;
     let bytes = fs::read(&canonical)?;
     Ok(PickedFile {
-        name: canonical.file_name().and_then(|n| n.to_str()).unwrap_or("document.md").to_owned(),
+        name: canonical
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document.md")
+            .to_owned(),
         fingerprint: fingerprint_of(&canonical, &bytes)?,
         bytes_base64: B64.encode(&bytes),
         locator: format!("path:{}", canonical.display()),
@@ -127,12 +137,25 @@ fn read_picked(allowed: &Allowed, path: &Path) -> CmdResult<PickedFile> {
 }
 
 #[tauri::command]
-async fn pick_markdown_files(app: tauri::AppHandle, allowed: State<'_, Allowed>, multiple: bool) -> CmdResult<Vec<PickedFile>> {
-    let dialog = app.dialog().file().add_filter("Markdown", &["md", "markdown", "mdown", "mkd", "txt"]);
-    let picked = if multiple { dialog.blocking_pick_files() } else { dialog.blocking_pick_file().map(|f| vec![f]) };
+async fn pick_markdown_files(
+    app: tauri::AppHandle,
+    allowed: State<'_, Allowed>,
+    multiple: bool,
+) -> CmdResult<Vec<PickedFile>> {
+    let dialog = app
+        .dialog()
+        .file()
+        .add_filter("Markdown", &["md", "markdown", "mdown", "mkd", "txt"]);
+    let picked = if multiple {
+        dialog.blocking_pick_files()
+    } else {
+        dialog.blocking_pick_file().map(|f| vec![f])
+    };
     let mut out = Vec::new();
     for file in picked.unwrap_or_default() {
-        let path = file.into_path().map_err(|_| CommandError::new("file.unsupported"))?;
+        let path = file
+            .into_path()
+            .map_err(|_| CommandError::new("file.unsupported"))?;
         out.push(read_picked(&allowed, &path)?);
     }
     Ok(out)
@@ -141,7 +164,12 @@ async fn pick_markdown_files(app: tauri::AppHandle, allowed: State<'_, Allowed>,
 /// Files passed on the command line / via "Open with" at launch (taken once).
 #[tauri::command]
 fn take_launch_files(allowed: State<'_, Allowed>) -> CmdResult<Vec<PickedFile>> {
-    let files: Vec<PathBuf> = std::mem::take(&mut *allowed.launch_files.lock().map_err(|_| CommandError::new("unknown"))?);
+    let files: Vec<PathBuf> = std::mem::take(
+        &mut *allowed
+            .launch_files
+            .lock()
+            .map_err(|_| CommandError::new("unknown"))?,
+    );
     files.iter().map(|p| read_picked(&allowed, p)).collect()
 }
 
@@ -156,28 +184,44 @@ struct ReadResult {
 fn read_linked(allowed: State<'_, Allowed>, locator: String) -> CmdResult<ReadResult> {
     let path = allowed.check(&locator)?;
     let bytes = fs::read(&path)?;
-    Ok(ReadResult { fingerprint: fingerprint_of(&path, &bytes)?, bytes_base64: B64.encode(bytes) })
+    Ok(ReadResult {
+        fingerprint: fingerprint_of(&path, &bytes)?,
+        bytes_base64: B64.encode(bytes),
+    })
 }
 
 /// Writes only if the file still matches `expected` (content hash decides when size/mtime differ).
 #[tauri::command]
-fn write_linked(allowed: State<'_, Allowed>, locator: String, bytes_base64: String, expected: Fingerprint) -> CmdResult<Fingerprint> {
+fn write_linked(
+    allowed: State<'_, Allowed>,
+    locator: String,
+    bytes_base64: String,
+    expected: Fingerprint,
+) -> CmdResult<Fingerprint> {
     let path = allowed.check(&locator)?;
-    let bytes = B64.decode(bytes_base64).map_err(|_| CommandError::new("edit.invalid_range"))?;
-    let current = fs::read(&path)?;
-    let now = fingerprint_of(&path, &current)?;
-    if (now.size != expected.size || now.modified_ms != expected.modified_ms) && now.content_hash != expected.content_hash {
-        return Err(CommandError::new("file.external_change"));
-    }
-    write_atomic(&path, &bytes)?;
+    let bytes = B64
+        .decode(bytes_base64)
+        .map_err(|_| CommandError::new("edit.invalid_range"))?;
+    write_linked_checked(&path, &bytes, &expected.content_hash).map_err(CommandError::new)?;
     fingerprint_of(&path, &bytes)
 }
 
 #[tauri::command]
 async fn save_as(app: tauri::AppHandle, name: String, bytes_base64: String) -> CmdResult<bool> {
-    let bytes = B64.decode(bytes_base64).map_err(|_| CommandError::new("edit.invalid_range"))?;
-    let Some(target) = app.dialog().file().set_file_name(&name).blocking_save_file() else { return Ok(false) };
-    let path = target.into_path().map_err(|_| CommandError::new("file.unsupported"))?;
+    let bytes = B64
+        .decode(bytes_base64)
+        .map_err(|_| CommandError::new("edit.invalid_range"))?;
+    let Some(target) = app
+        .dialog()
+        .file()
+        .set_file_name(&name)
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let path = target
+        .into_path()
+        .map_err(|_| CommandError::new("file.unsupported"))?;
     write_atomic(&path, &bytes)?;
     Ok(true)
 }
@@ -188,13 +232,35 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
+            app.manage(Arc::new(
+                mavyn_local_store::StoreHost::new(dir.join("library.sqlite3"))
+                    .map_err(std::io::Error::other)?,
+            ));
             let store = dir.join("allowed-files.json");
-            let paths: HashSet<PathBuf> = fs::read(&store).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            let launch_files = std::env::args_os().skip(1).map(PathBuf::from).filter(|p| p.is_file()).collect();
-            app.manage(Allowed { paths: Mutex::new(paths), store, launch_files: Mutex::new(launch_files) });
+            let paths: HashSet<PathBuf> = fs::read(&store)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            let launch_files = std::env::args_os()
+                .skip(1)
+                .map(PathBuf::from)
+                .filter(|p| p.is_file())
+                .collect();
+            app.manage(Allowed {
+                paths: Mutex::new(paths),
+                store,
+                launch_files: Mutex::new(launch_files),
+            });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![pick_markdown_files, take_launch_files, read_linked, write_linked, save_as])
+        .invoke_handler(tauri::generate_handler![
+            pick_markdown_files,
+            take_launch_files,
+            read_linked,
+            write_linked,
+            save_as,
+            local_store
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Mavyn");
 }

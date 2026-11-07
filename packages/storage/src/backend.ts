@@ -27,6 +27,8 @@ export interface Tx {
 }
 
 export interface Backend {
+  /** Optional persistent search; native SQLite avoids a second JS copy of all text. */
+  search?(query: string, limit?: number): Promise<import('./search.ts').SearchHit[]>;
   transaction<R>(stores: StoreName[], mode: 'readonly' | 'readwrite', fn: (tx: Tx) => Promise<R>): Promise<R>;
   close(): void;
 }

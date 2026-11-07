@@ -103,12 +103,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     const handle = await this.handle(locator);
     await ensurePermission(handle, 'readwrite');
     const current = await handle.getFile();
-    if (current.size !== expected.size || current.lastModified !== expected.modifiedMs) {
-      // Size/mtime can change without content changes (touch, sync tools): compare content too.
-      const currentBytes = new Uint8Array(await current.arrayBuffer());
-      if ((await sha256Hex(currentBytes)) !== expected.contentHash) {
-        throw new AppError('file.external_change', { locator });
-      }
+    // Metadata can be preserved by editors/sync tools; content is always authoritative.
+    const currentBytes = new Uint8Array(await current.arrayBuffer());
+    if ((await sha256Hex(currentBytes)) !== expected.contentHash) {
+      throw new AppError('file.external_change', { locator });
     }
     // Chromium writes to a swap file and atomically replaces the original on close().
     const writable = await handle.createWritable();

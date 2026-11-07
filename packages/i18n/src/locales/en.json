@@ -2,7 +2,9 @@
   "app": {
     "name": "Mavyn",
     "loading": "Loading…",
-    "skipToContent": "Skip to content"
+    "skipToContent": "Skip to content",
+    "startupFailed": "The library could not be opened. Your existing data was not replaced.",
+    "retry": "Try again"
   },
   "sidebar": {
     "library": "Library",
@@ -176,7 +178,8 @@
     "version": "Version {{version}}",
     "storage": "Data is stored locally in this browser.",
     "close": "Close settings",
-    "dismiss": "Dismiss"
+    "dismiss": "Dismiss",
+    "nativeStorage": "Library data is stored in SQLite in this app’s data directory."
   },
   "history": {
     "title": "Version history",
@@ -192,7 +195,17 @@
     "reason_merge": "Merged",
     "reason_conflict": "Conflict copy",
     "close": "Close history",
-    "reason_sync": "Synced"
+    "reason_sync": "Synced",
+    "retention": "History retention",
+    "keepAll": "Keep all revisions",
+    "balanced": "Keep 30 days, then one per day for a year",
+    "retentionHint": "Changing this setting does not delete history. Cleanup keeps the initial and current revision, and all history of trashed documents.",
+    "cleanup": "Clean up history",
+    "confirmTitle": "Delete old revisions?",
+    "confirmHint": "Old revisions outside the selected retention policy will be permanently removed. Current documents stay unchanged. Export a backup first if you need every version.",
+    "confirmAction": "Delete old revisions",
+    "removed_one": "Removed {{count}} old revision",
+    "removed_other": "Removed {{count}} old revisions"
   },
   "sync": {
     "synced": "Synced",
@@ -270,7 +283,10 @@
     "folder.not_found": "The folder no longer exists. Choose another destination.",
     "folder.invalid_name": "Enter a folder name.",
     "folder.duplicate_name": "A folder with this name already exists here.",
-    "folder.cycle": "A folder cannot be moved inside itself or its subfolders."
+    "folder.cycle": "A folder cannot be moved inside itself or its subfolders.",
+    "storage.busy": "The local database is busy in another window. Try again shortly.",
+    "storage.schema_unsupported": "This library was created by another database version. Update the app before opening it.",
+    "storage.migration_conflict": "Both the old library and a native library exist. Neither was overwritten. Export or back up both before merging them."
   },
   "a11y": {
     "toggleSidebar": "Toggle sidebar",

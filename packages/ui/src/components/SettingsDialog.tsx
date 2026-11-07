@@ -3,13 +3,14 @@ import { ACCENTS, usePreferences, type ContentWidth, type FontFamily, type Theme
 import { useServices } from '../services.tsx';
 import { Field, Modal, Switch } from './primitives.tsx';
 import { SyncSettings } from './SyncSettings.tsx';
+import { HistorySettings } from './HistorySettings.tsx';
 
 const LOCALE_NAMES: Record<Locale, string> = { en: 'English', ru: 'Русский' };
 
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange(open: boolean): void }) {
   const { t } = useTranslation();
   const prefs = usePreferences();
-  const { appVersion } = useServices();
+  const { appVersion, platform } = useServices();
 
   return (
     <Modal open={open} onOpenChange={onOpenChange} title={t('settings.title')} closeLabel={t('settings.close')} wide>
@@ -119,11 +120,16 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         </section>
 
         <section>
+          <h3 className="settings-heading">{t('history.title')}</h3>
+          <HistorySettings />
+        </section>
+
+        <section>
           <h3 className="settings-heading">{t('settings.about')}</h3>
           <p>
             {t('app.name')} · {t('settings.version', { version: appVersion })}
           </p>
-          <p className="muted">{t('settings.storage')}</p>
+          <p className="muted">{t(platform.kind === 'web' ? 'settings.storage' : 'settings.nativeStorage')}</p>
         </section>
       </div>
     </Modal>

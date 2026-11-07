@@ -21,6 +21,35 @@ Highlights:
 - `packages/ui/src/sync.test.tsx` — sign in, pull, conflict banner, *keep both* in the rendered app.
 - `packages/i18n/src/i18n.test.ts` — en/ru key parity, Russian plural forms, interpolation variables.
 
+## Native SQLite and linked saving
+
+The native engine resolves independently from server SQLx (which links a different SQLite
+version), and does not need Tauri/WebKit to test:
+
+```bash
+cargo test --manifest-path crates/local-store/Cargo.toml
+cargo fmt --manifest-path crates/local-store/Cargo.toml --check
+cargo clippy --manifest-path crates/local-store/Cargo.toml --all-targets -- -D warnings
+cargo build --manifest-path crates/local-store/Cargo.toml --example storage_bridge
+```
+
+To run the shared TypeScript Library contract against real Rust SQLite, provide the JSON
+command array for the bridge. On Linux, for example:
+
+```bash
+export MAVYN_STORAGE_BRIDGE='["/absolute/path/to/Mavyn/crates/local-store/target/debug/examples/storage_bridge"]'
+npm test
+```
+
+On Windows this array can launch WSL (`["wsl.exe","-d","Ubuntu","--","/mnt/c/.../storage_bridge"]`).
+Without the variable the native extension and migration suite are skipped; normal web tests
+still run. The test-only stdio bridge is not part of the production app or its permissions.
+
+Coverage: commit/reopen with exact CRLF/Cyrillic/emoji; rollback and connection drop; token,
+scope and readonly rejection; idle transaction reaping with two real file-backed connections;
+FTS5 en/ru/prefix/trash/restore; future-schema refusal; migration retry and source preservation;
+retention and shared content; same-size/same-mtime external file edit rejection.
+
 ## Rust server (Docker, no host toolchain needed)
 
 ```bash

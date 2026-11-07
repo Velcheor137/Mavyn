@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["apps/server", "crates/domain", "crates/sync-protocol"]
 # The Tauri shell builds separately: it needs WebKitGTK/WebView2 system libraries.
-exclude = ["apps/desktop/src-tauri"]
+exclude = ["apps/desktop/src-tauri", "crates/local-store"]
 
 [workspace.package]
 version = "0.1.0"

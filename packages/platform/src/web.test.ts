@@ -59,6 +59,16 @@ describe('WebPlatformAdapter linked files', () => {
     expect(handle.content).toBe('edited in another app');
   });
 
+  it('refuses same-size external edits even when mtime is unchanged', async () => {
+    const handle = new FakeHandle('a.md', 'aaaa');
+    const adapter = setup(handle);
+    const [picked] = await adapter.pickFiles({ link: true, multiple: false });
+    handle.content = 'bbbb';
+    await expect(adapter.writeLinked(picked!.locator!, encode('mine'), picked!.fingerprint!)).rejects.toMatchObject({ code: 'file.external_change' });
+    expect(handle.content).toBe('bbbb');
+    expect(handle.writes).toBe(0);
+  });
+
   it('tolerates mtime-only changes when content is identical', async () => {
     const handle = new FakeHandle('a.md', 'same');
     const adapter = setup(handle);

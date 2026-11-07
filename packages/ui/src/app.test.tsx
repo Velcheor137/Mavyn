@@ -3,10 +3,11 @@ import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import { refreshLibrary } from './workspace.ts';
 import { createI18n, I18nextProvider } from '@mdr/i18n';
+import { AppError } from '@mdr/core';
 import { render } from '@mdr/markdown-engine';
 import type { PlatformAdapter } from '@mdr/platform';
-import { Library, MemoryBackend } from '@mdr/storage';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Library, MemoryBackend, type LibraryOptions } from '@mdr/storage';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell, DEFAULT_PREFERENCES, getSession, initWorkspace, openDocument, resetWorkspaceForTests, ServicesProvider, usePreferences, type AppServices } from './index.ts';
 
 const platform: PlatformAdapter = {
@@ -22,8 +23,8 @@ const platform: PlatformAdapter = {
   saveAs: async () => {},
 };
 
-async function setup(text: string) {
-  const library = new Library(new MemoryBackend());
+async function setup(text: string, options: LibraryOptions = {}) {
+  const library = new Library(new MemoryBackend(), options);
   const i18n = createI18n('en');
   const services: AppServices = {
     library,
@@ -168,6 +169,44 @@ describe('AppShell', () => {
     await library.updateMeta(id, { remote: { serverId: 'server', libraryId: 'remote', baseRevisionId: 'r', baseHash: 'h', conflict: null } });
     await act(() => refreshLibrary());
     expect(within(dialog).getByText(hint)).toBeTruthy();
+  });
+
+  it('persists history retention but deletes old revisions only after explicit confirmation', async () => {
+    const user = userEvent.setup();
+    const end = Date.parse('2026-11-07T12:00:00Z');
+    let clock = end - 400 * 86_400_000;
+    const { library, id } = await setup('# History', { now: () => clock });
+    clock = end - 399 * 86_400_000;
+    let version = await library.saveContent(id, 'old', (await library.readContent(id)).version);
+    clock = end;
+    await library.saveContent(id, 'current', version);
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    await user.selectOptions(await within(settings).findByRole('combobox', { name: 'History retention' }), 'balanced');
+    await waitFor(async () => expect(await library.getHistoryRetention()).toBe('balanced'));
+    expect(await library.listRevisions(id)).toHaveLength(3);
+    await user.click(within(settings).getByRole('button', { name: 'Clean up history' }));
+    const confirm = screen.getByRole('dialog', { name: 'Delete old revisions?' });
+    await user.click(within(confirm).getByRole('button', { name: 'Delete old revisions' }));
+    await waitFor(async () => expect(await library.listRevisions(id)).toHaveLength(2));
+    expect((await library.readContent(id)).text).toBe('current');
+    expect(await screen.findByText('Removed 1 old revision')).toBeTruthy();
+  });
+
+  it('shows cleanup failures inside the confirmation dialog and keeps it open for retry', async () => {
+    const user = userEvent.setup();
+    const { library } = await setup('# Keep');
+    await library.setHistoryRetention('balanced');
+    vi.spyOn(library, 'pruneHistory').mockRejectedValueOnce(new AppError('storage.failed'));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    const cleanup = within(settings).getByRole('button', { name: 'Clean up history' });
+    await waitFor(() => expect(cleanup).not.toBeDisabled());
+    await user.click(cleanup);
+    const confirm = screen.getByRole('dialog', { name: 'Delete old revisions?' });
+    await user.click(within(confirm).getByRole('button', { name: 'Delete old revisions' }));
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent('Local storage failed.');
+    expect(within(confirm).getByRole('button', { name: 'Delete old revisions' })).not.toBeDisabled();
   });
 
   it('renders untrusted HTML inert and keeps raw-HTML checkboxes non-interactive', async () => {
