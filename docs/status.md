@@ -1,7 +1,8 @@
 # Status
 
-Last updated: 2026-11-08. Development machine: Debian 13 x86_64, Node 22.23, Docker 29;
-no host Rust toolchain, no WebKitGTK, no Android SDK, ~12 GB RAM.
+Last updated: 2026-11-08. Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
+Node 22.23.0, Rust 1.93.1 and WebView2 157.0.4341.42. Earlier Debian/Docker results below
+are inherited platform checks, not reruns on this Windows machine.
 
 ## Native storage continuation — 2026-11-08
 
@@ -18,11 +19,39 @@ no host Rust toolchain, no WebKitGTK, no Android SDK, ~12 GB RAM.
 - Verified on Windows + Ubuntu 26.04 WSL: Node 22.23.0 strict TypeScript, 168 Vitest
   tests (including the shared Library suite through the real Rust SQLite bridge),
   web and desktop frontend production builds. Rust 1.93.1 local-store: 10 tests,
-  fmt and Clippy with warnings denied. Whole-shell Linux compilation is recorded separately
-  once its dependency/build check completes. No native GUI launch or Android device test.
+  fmt and Clippy with warnings denied. Whole-shell Linux cargo check and Clippy passed
+  with the native SQLite engine. Windows GUI verification is recorded below; no Android device test.
 - One-time legacy migration currently allocates a consistent snapshot of the old database;
-  memory requirements for very large libraries remain unmeasured. Windows native compilation,
-  real filesystem dialogs and Android SAF are still pending.
+  memory requirements for very large libraries remain unmeasured. Android SAF and device
+  validation are still pending.
+
+## Windows native UI verification — 2026-11-08
+
+- Cross-built the actual x64 MSVC release executable with Rust 1.93.1, cargo-xwin 0.23.1,
+  LLVM and the Windows MSVC sysroot in Ubuntu WSL. Embedded the production desktop frontend
+  with `tauri/custom-protocol`; no development server was used. Added the missing Windows
+  ICO asset and included it in the Tauri bundle configuration.
+- Ran that executable on Windows 10.0.26200 x64 with WebView2 157.0.4341.42. Used the
+  isolated build identifier `app.mavyn.windows-verification`; ordinary Mavyn data was not used.
+- Through the real Windows UI: native file picker/import, duplicate-label task toggle,
+  CodeMirror typing/autosave, Russian `ежик` → `Ёжик` search, search for a newly typed term,
+  folder creation/document move, complete app exit/relaunch, history diff and restoration.
+  Folder membership, edited text and revisions survived relaunch. Restore created a third
+  revision (`import`, `edit`, `restore`), preserving the edited content in history.
+- Independently opened the app-created SQLite database read-only: schema v1, WAL,
+  `PRAGMA quick_check = ok`, correct SHA256 content hashes, FTS5 matching current text,
+  CRLF and BOM retained. The imported source file's SHA256 remained unchanged.
+- Linked-file UI save wrote the real Windows file while preserving BOM/CRLF. An external
+  same-size/same-mtime `Task` → `Else` edit caused the conflict banner on the next UI save;
+  the external bytes were preserved. “Load newer version” loaded `Else` and updated SQLite/FTS5.
+- Settings displayed the default keep-all history policy and disabled cleanup. Switching
+  retention policies, destructive cleanup, large-library migration, installer/MSI/NSIS,
+  file associations, signing, Windows server sync and other Windows versions remain unverified.
+- Final regression checks: strict TypeScript passed, desktop frontend production build passed,
+  and all 168 Vitest tests passed with the real Rust/SQLite bridge. The first run timed out
+  in two bridge tests at the unchanged five-second limit; moving the bridge executable from
+  the Windows-mounted filesystem to the WSL Linux filesystem made the full suite pass.
+  No test timeouts or application behavior were changed for this verification.
 
 ## Windows continuation — 2026-11-07
 
@@ -65,7 +94,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | Rust crates + server | `cargo test --workspace` (19 tests incl. 10 API integration tests against PostgreSQL 15.13) and `cargo clippy --all-targets -D warnings` in `rust:1.95-bookworm` | ✅ passing |
 | Docker Compose stack (linux/amd64) | `docker compose up -d --build` from a clean checkout state; health checks; setup token from log → admin → login → library → Cyrillic document → search; server restart keeps data; web app + SPA fallback + security headers served | ✅ manual smoke test |
 | Tauri desktop — Linux | Frontend builds; Rust shell `cargo clippy -D warnings` + `cargo test` (atomic write) in a Debian container with WebKitGTK 4.1 | ✅ compiles · ⏳ **never launched** (no display), file dialogs/associations unverified, no bundle built |
-| Tauri desktop — Windows | — | ⏳ not compiled (needs Windows + WebView2) |
+| Tauri desktop — Windows | MSVC x64 release cross-build, actual Windows/WebView2 UI: import, editor/tasks, SQLite/FTS5, folders, history, restart, linked saves/conflicts | ✅ executable and local-storage UI verified · ⏳ installers/associations/signing not tested |
 | Android | — | ⏳ not started (SAF adapter not implemented) |
 | linux/arm64 image | — | ⏳ not built |
 
@@ -86,7 +115,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | 2 Design system + localization | Done for the web app: themes, accent, reading prefs, responsive layout, full en/ru, runtime switching |
 | 3 Markdown reader | Done: GFM, footnotes, emoji, math, Mermaid (zoom/pan/export SVG), callouts, Shiki, TOC, reading progress, lightbox. Relative local images: placeholder only on web |
 | 4 Editor + tasks | Done: reader/source/split, exact-source checkbox edits, undo/redo across autosave, stale-edit rejection, conflict banner |
-| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Missing: Android SAF and real native app/device validation |
+| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Windows local-storage UI verified. Missing: Android SAF/device validation and Linux GUI validation |
 | 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, revisions, change feed, search, compose, web sign-in. Missing: folders/attachments endpoints, user/member management UI |
 | 7 Sync + offline | Web ↔ server done (one library ↔ one local folder): incremental pull, CAS push, idempotent retries, three-way merge, conflict UI, tombstones, revoked access, sign-out. Missing: desktop/Android sync (bearer token in secure storage), attachments, QR-assisted connection, offline PWA verification |
 | 8 Polish | Partial: Markdown/HTML export and print stylesheet. Missing: PDF beyond print dialog, axe audit, measured performance budgets, Playwright E2E |

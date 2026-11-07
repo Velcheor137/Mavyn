@@ -20,7 +20,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi", "deb", "rpm", "appimage"],
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
     "fileAssociations": [
       { "ext": ["md", "markdown", "mdown", "mkd"], "name": "Markdown document", "description": "Markdown document", "role": "Editor", "mimeType": "text/markdown" }
     ],
