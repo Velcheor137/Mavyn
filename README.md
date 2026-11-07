@@ -25,7 +25,7 @@ PDF export beyond the browser's print dialog. See the status page.
 
 ## Quick start (development)
 
-Requires Node.js ≥ 22.12.
+Requires Node.js 22.22.2+, 24.15.0+, or 26+ (matching the locked test dependencies).
 
 ```bash
 npm install
