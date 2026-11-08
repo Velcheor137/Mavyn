@@ -209,6 +209,35 @@ describe('AppShell', () => {
     expect(within(confirm).getByRole('button', { name: 'Delete old revisions' })).not.toBeDisabled();
   });
 
+  it('creates a new document inside the open folder, shows it there and saves typed text', async () => {
+    const { library } = await setup('# Existing\n');
+    const folder = await library.createFolder('Work');
+    await act(() => refreshLibrary());
+    fireEvent.click(await screen.findByRole('button', { name: /^Work/ }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'New document' })[0]!);
+
+    await waitFor(async () => expect((await library.listDocuments()).length).toBe(2));
+    const created = (await library.listDocuments()).find((d) => d.title !== 'Existing')!;
+    expect(created.folderId).toBe(folder.id);
+    // Visible in the folder the user is looking at.
+    const list = screen.getAllByRole('list').find((l) => l.classList.contains('doc-list'))!;
+    expect(within(list).getByText('Untitled')).toBeInTheDocument();
+
+    const session = getSession(created.id)!;
+    act(() => session.apply([{ from: session.text.length, to: session.text.length, insert: 'typed text' }], 'editor'));
+    await waitFor(async () => expect((await library.readContent(created.id)).text).toContain('typed text'), { timeout: 3000 });
+  });
+
+  it('creates a new document with the open tag or as a favorite', async () => {
+    const { library } = await setup('# Tagged\n');
+    const first = (await library.listDocuments())[0]!;
+    await library.updateMeta(first.id, { tags: ['ideas'] });
+    await act(() => refreshLibrary());
+    fireEvent.click(await screen.findByRole('button', { name: /^ideas/ }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'New document' })[0]!);
+    await waitFor(async () => expect((await library.listDocuments()).filter((d) => d.tags.includes('ideas'))).toHaveLength(2));
+  });
+
   it('renders untrusted HTML inert and keeps raw-HTML checkboxes non-interactive', async () => {
     await setup('<input type="checkbox"> fake\n\n<img src=x onerror="window.__pwned=1">\n\n- [ ] real\n');
     const real = await screen.findByRole('checkbox', { name: /real/ });

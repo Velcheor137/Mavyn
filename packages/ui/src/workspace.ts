@@ -225,9 +225,21 @@ export function setReadingPosition(id: string, fraction: number): void {
   positionTimer = setTimeout(persist, 500);
 }
 
+/**
+ * Creates a document where the user is looking: inside the open folder (so it is visible there
+ * and, in a synced folder, uploaded), with the open tag, or as a favorite.
+ */
 export async function createDocument(title: string): Promise<void> {
   const { library } = svc();
-  const meta = await library.createDocument({ text: `# ${title}\n\n`, fileName: `${title}.md` });
+  const { section, folders } = useWorkspace.getState();
+  const folderId = section.kind === 'folder' && folders.some((f) => f.id === section.folderId) ? section.folderId : null;
+  const meta = await library.createDocument({
+    text: `# ${title}\n\n`,
+    fileName: `${title}.md`,
+    folderId,
+    tags: section.kind === 'tag' ? [section.tag] : [],
+  });
+  if (section.kind === 'favorites') await library.updateMeta(meta.id, { favorite: true });
   await refreshLibrary();
   useWorkspace.setState((s) => ({ viewModes: { ...s.viewModes, [meta.id]: 'split' } }));
   await openDocument(meta.id);

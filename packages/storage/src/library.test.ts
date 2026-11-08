@@ -285,3 +285,24 @@ describe('sync support', () => {
     expect((await old.readContent(meta.id)).text).toBe('kept');
   });
 });
+
+describe('adoptLegacyLibrary', () => {
+  it('moves an anonymous library into an empty account library once', async () => {
+    const { adoptLegacyLibrary } = await import('./index.ts');
+    const legacyBackend = new MemoryBackend();
+    const legacy = new Library(legacyBackend);
+    const folder = await legacy.createFolder('Notes');
+    const doc = await legacy.createDocument({ text: '# Kept\n', fileName: 'kept.md', folderId: folder.id });
+    const userBackend = new MemoryBackend();
+
+    expect(await adoptLegacyLibrary(legacyBackend, userBackend)).toBe(true);
+    const user = new Library(userBackend);
+    expect((await user.readContent(doc.id)).text).toBe('# Kept\n');
+    expect((await user.getDocument(doc.id)).folderId).toBe(folder.id);
+    expect((await user.listRevisions(doc.id)).length).toBe(1);
+
+    // A non-empty target is never merged into.
+    expect(await adoptLegacyLibrary(legacyBackend, userBackend)).toBe(false);
+    expect(await adoptLegacyLibrary(new MemoryBackend(), new MemoryBackend())).toBe(false);
+  });
+});

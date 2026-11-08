@@ -1328,3 +1328,35 @@ details.callout > summary {
   background: var(--color-code-bg);
   word-break: break-all;
 }
+
+/* ---------- Sign-in page (web app served by a server) ---------- */
+.auth-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--color-bg);
+}
+.auth-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 28px 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow);
+}
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.auth-brand h1 {
+  font-size: 22px;
+  font-weight: 650;
+}
+.auth-subtitle {
+  font-size: 16px;
+  font-weight: 600;
+}

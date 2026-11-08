@@ -12,3 +12,4 @@ export { initWorkspace, useWorkspace, getSession, resetWorkspaceForTests, openDo
 export { buildStandaloneHtml } from './export.ts';
 export { THEME_BOOTSTRAP_SCRIPT, PREFS_KEY } from './theme-bootstrap.ts';
 export { initSync, resetSyncForTests, useSync } from './sync.ts';
+export { AuthGate, type AuthenticatedUser } from './components/AuthGate.tsx';

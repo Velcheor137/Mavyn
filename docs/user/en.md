@@ -94,14 +94,15 @@ dark or system theme and the accent color; *Reading* sets font, size, line heigh
 
 When you open the web app from a self-hosted server (see the deployment guide), it can sync.
 
-**First start of a new server.** The app opens *Set up the server* by itself. Paste the setup token
-(the administrator finds it with `docker compose logs server | grep "setup token"`), enter a name and
-a password of at least 10 characters, then choose or create a library. *Later* closes the window;
-the same form is under Settings → Server.
+**Signing in.** The web app served by a server always starts with a sign-in page; nothing is shown
+before you sign in. On a brand-new server the page asks to set up the server instead: paste the
+setup token (the administrator finds it with `docker compose logs server | grep "setup token"`),
+enter a name and a password of at least 10 characters. Each account has its own local library in
+the browser. A device you signed in on before also opens while the server is unreachable.
 
 **Afterwards:**
 
-1. Settings → **Server** → sign in with the account your administrator created.
+1. Settings → **Server** shows the signed-in account.
 2. Choose a server library (or create one) and press **Start syncing**.
 3. The library appears as a folder of the same name. Local documents directly in that folder
    are enrolled in sync. Once enrolled, they continue syncing even if moved elsewhere locally.
@@ -115,7 +116,10 @@ a **conflict** banner. Nothing is overwritten. Choose *Keep my version*, *Use se
 (your text stays in the document history) or *Keep both* (your text moves to a separate document).
 *Show server version* displays the differences first.
 
-**Sign out** in the same section. Tick *Remove synced documents from this device* on shared
+New documents are created in the folder you are viewing, so a document made inside the synced
+folder is uploaded automatically.
+
+**Sign out** in the same section returns to the sign-in page. Tick *Remove synced documents from this device* on shared
 computers. Documents with changes that were never uploaded are always kept as local documents.
 Copies already on a device cannot be deleted remotely.
 

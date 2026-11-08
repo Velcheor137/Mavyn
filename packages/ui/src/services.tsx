@@ -20,6 +20,11 @@ export interface AppServices {
   server?: { baseUrl: string; api: SyncApi; health(): Promise<boolean> };
   /** Native apps can configure an HTTPS origin; credentials are held by the OS vault. */
   configureServer?(url: string): Promise<AppServices['server']>;
+  /**
+   * Set by builds that require an account (the web app served by a Mavyn server): called after
+   * sign-out and when the server reports the session as gone, to return to the sign-in page.
+   */
+  onSignedOut?(): void;
 }
 
 const ServicesContext = createContext<AppServices | null>(null);

@@ -23,6 +23,8 @@ export class FakeServer {
   offline = false;
   /** When set, the server has no users yet and accepts this setup token once. */
   setupToken: string | null = null;
+  /** When set, `me` answers 401 until `login` with this password succeeds (per client). */
+  password: string | null = null;
 
   client(): SyncApi {
     const guard = async <T>(fn: () => Promise<T>, op?: FakeServer['dropResponseOf']): Promise<T> => {
@@ -35,7 +37,10 @@ export class FakeServer {
       return structuredClone(result);
     };
     const me: MeResponse = { id: 'user', username: 'tester', is_admin: true, csrf_token: 'csrf' };
-    const signIn = (username: string) => {
+    let signedIn = this.password === null;
+    const signIn = (username: string, password?: string) => {
+      if (this.password !== null && password !== this.password) throw new SyncHttpError(401, 'auth.invalid_credentials', null);
+      signedIn = true;
       me.username = username;
       return me;
     };
@@ -48,9 +53,16 @@ export class FakeServer {
           this.setupToken = null;
           return { id: me.id, username, is_admin: true };
         }),
-      me: () => guard(async () => me),
-      login: (username) => guard(async () => signIn(username)),
-      logout: () => guard(async () => undefined),
+      me: () =>
+        guard(async () => {
+          if (!signedIn) throw new SyncHttpError(401, 'auth.required', null);
+          return me;
+        }),
+      login: (username, password) => guard(async () => signIn(username, password)),
+      logout: () =>
+        guard(async () => {
+          signedIn = this.password === null;
+        }),
       listLibraries: () => guard(async (): Promise<LibraryInfo[]> => [{ id: this.libraryId, name: 'Shared', role: 'owner' }]),
       createLibrary: (name) => guard(async (): Promise<LibraryInfo> => ({ id: this.libraryId, name, role: 'owner' })),
       changes: (_lib, cursor) => guard(async () => this.changes(cursor)),

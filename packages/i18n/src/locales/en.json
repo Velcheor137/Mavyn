@@ -357,5 +357,11 @@
     "localOnlyHint": "This changes library organization only. Linked files on disk keep their names and locations.",
     "syncedHint": "This document continues syncing with its server library after moving.",
     "uploadHint": "Documents placed directly in this folder are uploaded to the connected server library."
+  },
+  "auth": {
+    "title": "Sign in",
+    "unavailable": "The server is not reachable. Check the connection and try again.",
+    "retry": "Try again",
+    "hint": "Accounts are created by the server administrator."
   }
 }

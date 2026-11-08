@@ -18,6 +18,8 @@ offline for long periods. Report vulnerabilities privately to the maintainers.
 | Brute force | Per-IP and per-username login rate limits | `login_is_rate_limited` |
 | IDOR | Every library/document access resolves the library and checks membership; outsiders get 404 | `library_acl_prevents_idor_and_enforces_roles` |
 | Bootstrap | One-time setup token, no default credentials | `setup_requires_token_and_runs_once` |
+| Anonymous web access | The web app served by a server renders only the sign-in/setup page until `/auth/me` succeeds; expired or revoked sessions return there. The API itself rejects every unauthenticated data request | `packages/ui/src/auth.test.tsx`, API tests |
+| Shared browsers | One IndexedDB library per account (`mdreader:<origin>:<userId>`); the pre-auth shared library is adopted once by the first account and then deleted | `library.test.ts` (`adoptLegacyLibrary`) |
 | Injection | Parameterized SQL only; search terms reduced to letters/digits before `to_tsquery` | `search_handles_russian_english_and_hostile_input` |
 | Path traversal | File names with separators rejected; server never writes client names to disk | `rejects_unsupported_protocol_and_path_tricks` |
 | Headers | CSP without inline scripts, `nosniff`, `DENY` framing, `no-referrer`, `no-store` for API | `health_and_security_headers` |

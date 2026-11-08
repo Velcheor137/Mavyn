@@ -57,12 +57,22 @@ function startEngine(connection: SyncConnection): void {
       await library.putSetting(SYNC_CONNECTION_KEY, c);
       useSync.setState({ connection: c });
     },
-    onState: (state) => useSync.setState({ state }),
+    onState: (state) => {
+      useSync.setState({ state });
+      if (state.kind === 'error' && state.code === 'auth.required') sessionLost();
+    },
     onRemoteChange: (ids) => void onRemoteChange(ids),
     beforeSync: flushAll,
   });
   useSync.setState({ connection });
   engine.start();
+}
+
+/** The server no longer accepts this session (expired or revoked elsewhere). */
+function sessionLost(): void {
+  const handler = services?.onSignedOut;
+  if (!handler) return;
+  void flushAll().finally(handler);
 }
 
 function ownsConnection(saved: SyncConnection | null | undefined, user: UserInfo): saved is SyncConnection {
@@ -124,7 +134,9 @@ export async function initSync(appServices: AppServices): Promise<void> {
     if (ownsConnection(saved, user)) startEngine(saved);
     else await loadLibraries();
   } catch (error) {
-    if (current === generation && toSyncAppError(error).code !== 'auth.required') useSync.setState({ error: toSyncAppError(error).code });
+    const code = toSyncAppError(error).code;
+    if (current === generation && code === 'auth.required') sessionLost();
+    else if (current === generation) useSync.setState({ error: code });
   } finally { if (current === generation) useSync.setState({ busy: false }); }
 }
 
@@ -247,6 +259,7 @@ export function signOut(removeCopies: boolean): Promise<void> {
     }
     useSync.setState({ user: null, connection: null, state: null, libraries: [] });
     await refreshLibrary();
+    services?.onSignedOut?.();
   }) as Promise<void>;
 }
 

@@ -33,3 +33,26 @@ export async function migrateLegacy(openSource: () => Promise<Backend>, target: 
     await target.importLegacy(snapshot);
   } finally { source.close(); }
 }
+
+/**
+ * Moves the anonymous browser library (pre-authentication web builds) into the signed-in user's
+ * database. Runs only into an empty target, so it happens once; the caller deletes the source
+ * afterwards so a second account on the same browser cannot adopt it again.
+ * Returns whether anything was copied.
+ */
+export async function adoptLegacyLibrary(source: Backend, target: Backend): Promise<boolean> {
+  const stores = Object.keys(STORE_KEYS) as StoreName[];
+  const targetEmpty = await target.transaction(['documents', 'folders'], 'readonly', async (tx) =>
+    (await tx.getAll('documents')).length === 0 && (await tx.getAll('folders')).length === 0);
+  if (!targetEmpty) return false;
+  const snapshot = await source.transaction(stores, 'readonly', async (tx) => {
+    const result = new Map<StoreName, unknown[]>();
+    for (const store of stores) result.set(store, await tx.getAll(store));
+    return result;
+  });
+  if ((snapshot.get('documents')?.length ?? 0) === 0 && (snapshot.get('folders')?.length ?? 0) === 0) return false;
+  await target.transaction(stores, 'readwrite', async (tx) => {
+    for (const [store, rows] of snapshot) for (const row of rows) await tx.put(store, row);
+  });
+  return true;
+}

@@ -1,14 +1,33 @@
+import type { ErrorCode } from '@mdr/core';
 import { useTranslation } from '@mdr/i18n';
 import { useState, type FormEvent } from 'react';
 import { completeSetup, useSync } from '../sync.ts';
 
 const LOG_COMMAND = 'docker compose logs server | grep "setup token"';
 
-/** First-run form: the one-time setup token from the server log plus the administrator's credentials. */
+/** First-run form inside the app (Settings → Server, setup dialog), backed by the sync controller. */
 export function SetupForm({ onDone }: { onDone?(): void }) {
-  const { t } = useTranslation();
   const busy = useSync((s) => s.busy);
   const error = useSync((s) => s.error);
+  return <SetupFields busy={busy} error={error} submit={(token, username, password) => completeSetup(token, username, password)} onDone={onDone} />;
+}
+
+/**
+ * First-run form: the one-time setup token from the server log plus the administrator's
+ * credentials. `submit` resolves true on success.
+ */
+export function SetupFields({
+  busy,
+  error,
+  submit: submitSetup,
+  onDone,
+}: {
+  busy: boolean;
+  error: ErrorCode | null;
+  submit(token: string, username: string, password: string): Promise<boolean>;
+  onDone?: (() => void) | undefined;
+}) {
+  const { t } = useTranslation();
   const [token, setToken] = useState('');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
@@ -18,7 +37,7 @@ export function SetupForm({ onDone }: { onDone?(): void }) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (password !== confirm) return;
-    if (await completeSetup(token, username.trim(), password)) {
+    if (await submitSetup(token, username.trim(), password)) {
       setPassword('');
       setConfirm('');
       onDone?.();
