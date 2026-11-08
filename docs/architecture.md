@@ -43,11 +43,11 @@ Rules:
 
 | Concern | Web/PWA | Desktop (Win/Linux) | Android |
 |---|---|---|---|
-| Managed storage | IndexedDB (documents, revisions, sync bases) | SQLite in app data dir through Rust local-store | Same SQLite engine wired; Android build/device verification pending |
+| Managed storage | IndexedDB (documents, revisions, sync bases) | SQLite in app data dir through Rust local-store | Same SQLite engine, verified in Android 16 x86_64 emulator; physical ARM64 pending |
 | Linked files | File System Access API where available (Chromium); otherwise import-only + "save as" download | Real paths via Rust commands, atomic save | SAF `content://` URIs with persisted permissions; copy/save-as fallback |
 | Full-text search | In-memory inverted index built in a worker from IndexedDB, persisted per identity | SQLite FTS5 (`unicode61 remove_diacritics 2`) + prefix queries | same as desktop |
-| Secrets | HttpOnly cookie session; nothing in JS storage | OS keyring (keyring crate) | Android Keystore-backed storage |
-| File associations | `launch_handler`/`file_handlers` in manifest (Chromium only) | NSIS/MSI associations, XDG `.desktop` MimeType | System picker; VIEW/SEND associations deferred |
+| Secrets | HttpOnly cookie session; nothing in JS storage | Windows Credential Manager; Linux native sync pending | Android Keystore AES-GCM, encrypted files excluded from backup |
+| File associations | `launch_handler`/`file_handlers` in manifest (Chromium only) | NSIS/MSI associations, XDG `.desktop` MimeType | System picker; VIEW/SEND/SEND_MULTIPLE managed copies with bounded durable mailbox |
 
 Capabilities are exposed as flags on `PlatformAdapter.capabilities`, and the UI hides or degrades
 features accordingly instead of failing at call time.
@@ -229,7 +229,13 @@ be exported. Offline copies cannot be erased remotely — the UI states this.
 
 **Deviation from the original plan:** per-identity IndexedDB databases were replaced by
 per-document `RemoteRef`s in one local database, so synced and local documents share one library
-UI. The desktop app does not sync yet (needs bearer tokens in OS secure storage and CORS/native HTTP).
+UI. Android and Windows reuse this engine through a restricted native HTTP client. The configured
+server is an HTTPS origin (loopback-only HTTP for development), redirects are refused, requests
+are limited to protocol routes, and login bearer tokens are stored in the OS vault before a
+redacted response reaches JavaScript. Credentials are scoped by a hash of the canonical origin;
+saved mappings must match both server URL and user. Logout drains sync/conflict operations
+before detaching copies and clearing credentials. Native startup retries an unavailable configured
+server. Linux native sync remains unavailable until a secure credential backend is implemented.
 
 ## 9. Security boundaries
 

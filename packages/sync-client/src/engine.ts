@@ -78,6 +78,8 @@ export class SyncEngine {
   private applying = 0;
   private unsubscribe: (() => void) | null = null;
   private stopped = true;
+  private retired = false;
+  private readonly operations = new Set<Promise<unknown>>();
 
   constructor(
     private readonly library: Library,
@@ -95,6 +97,7 @@ export class SyncEngine {
   }
 
   start(): void {
+    if (this.retired) return;
     if (!this.stopped) return;
     this.stopped = false;
     this.unsubscribe = this.library.onChange(() => {
@@ -115,6 +118,14 @@ export class SyncEngine {
     this.poll = null;
   }
 
+  /** Retire this identity and drain sync, conflict resolution and diff requests before logout. */
+  async stopAndWait(): Promise<void> {
+    this.retired = true;
+    this.stop();
+    this.again = false;
+    await Promise.allSettled([...this.operations, ...(this.running ? [this.running] : [])]);
+  }
+
   /** Schedules a sync (coalescing requests). */
   schedule(delayMs: number): void {
     if (this.stopped) return;
@@ -127,6 +138,7 @@ export class SyncEngine {
 
   /** Runs one full sync (pull + push). Concurrent calls share a run and trigger one more. */
   async syncNow(): Promise<void> {
+    if (this.retired) return;
     if (this.running) {
       this.again = true;
       return this.running;
@@ -407,20 +419,34 @@ export class SyncEngine {
   // ---------- Conflict resolution ----------
 
   /** Keep the local text: it becomes the next server revision on top of theirs. */
+  private operation<T>(action: () => Promise<T>): Promise<T> {
+    if (this.retired) return Promise.reject(new AppError('auth.required'));
+    const work = action();
+    this.operations.add(work);
+    return work.then((value) => { this.operations.delete(work); return value; },
+      (error: unknown) => { this.operations.delete(work); throw error; });
+  }
+
   async keepMine(id: string): Promise<void> {
-    const doc = await this.library.getDocument(id);
-    const conflict = doc.remote?.conflict;
-    if (!doc.remote || !conflict) return;
-    const theirs = await this.api.getDocument(id);
-    await this.applying_(async () => {
-      await this.library.updateMeta(id, { remote: { ...this.remoteRef(theirs), conflict: null } });
-      await this.library.putSyncBase({ documentId: id, hash: theirs.content_hash, text: theirs.content });
+    return this.operation(async () => {
+      const doc = await this.library.getDocument(id);
+      const conflict = doc.remote?.conflict;
+      if (!doc.remote || !conflict) return;
+      const theirs = await this.api.getDocument(id);
+      await this.applying_(async () => {
+        await this.library.updateMeta(id, { remote: { ...this.remoteRef(theirs), conflict: null } });
+        await this.library.putSyncBase({ documentId: id, hash: theirs.content_hash, text: theirs.content });
+      });
+      await this.syncNow();
     });
-    await this.syncNow();
   }
 
   /** Replace the local text with the server version (the local text stays in local history). */
   async useServer(id: string): Promise<void> {
+    return this.operation(() => this.useServer_(id));
+  }
+
+  private async useServer_(id: string): Promise<void> {
     const doc = await this.library.getDocument(id);
     if (!doc.remote?.conflict) return;
     const theirs = await this.api.getDocument(id);
@@ -436,17 +462,19 @@ export class SyncEngine {
 
   /** Keep both: the server version replaces this document, the local text moves to a local-only copy. */
   async keepBoth(id: string, copySuffix: string): Promise<string> {
-    const doc = await this.library.getDocument(id);
-    const { text } = await this.library.readContent(id);
-    const copy = await this.applying_(() =>
-      this.library.createDocument({ text, fileName: doc.fileName.replace(/(\.[^.]+)?$/, ` (${copySuffix})$1`), bom: doc.bom, tags: doc.tags }),
-    );
-    await this.useServer(id);
-    return copy.id;
+    return this.operation(async () => {
+      const doc = await this.library.getDocument(id);
+      const { text } = await this.library.readContent(id);
+      const copy = await this.applying_(() =>
+        this.library.createDocument({ text, fileName: doc.fileName.replace(/(\.[^.]+)?$/, ` (${copySuffix})$1`), bom: doc.bom, tags: doc.tags }),
+      );
+      await this.useServer_(id);
+      return copy.id;
+    });
   }
 
   /** Server version of a conflicted document, for showing a diff. */
   async serverText(id: string): Promise<string> {
-    return (await this.api.getDocument(id)).content;
+    return this.operation(async () => (await this.api.getDocument(id)).content);
   }
 }

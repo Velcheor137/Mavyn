@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SafPolicyTest {
+    @Test fun incomingUrisCannotReadUnresolvedOrUserQualifiedPrivateProviders() {
+        rejected("file.permission_denied") { SafPolicy.requireIncomingUri("content://0@app.mavyn.desktop.fileprovider/cache/a.md", null, 1000) }
+        rejected("file.permission_denied") { SafPolicy.requireIncomingUri("content://0%40app.mavyn.desktop.fileprovider/cache/a.md", 2000, 1000) }
+        rejected("file.permission_denied") { SafPolicy.requireIncomingUri("content://app.mavyn.desktop.fileprovider/cache/a.md", 1000, 1000) }
+        rejected("file.permission_denied") { SafPolicy.requireIncomingUri("content://unresolved/a.md", null, 1000) }
+        SafPolicy.requireIncomingUri("content://external.provider/a.md", 2000, 1000)
+    }
     private fun rejected(code: String, action: () -> Unit) {
         try { action(); fail("Expected $code") } catch (error: SafFailure) { assertEquals(code, error.code) }
     }

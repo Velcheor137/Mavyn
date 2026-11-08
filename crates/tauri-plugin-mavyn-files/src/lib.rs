@@ -20,6 +20,14 @@ impl<R: Runtime> Files<R> {
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("mavyn-files")
+        // Kotlin methods (including the session vault) are Rust-only. Never fall through
+        // from a webview plugin invocation into the mobile implementation.
+        .invoke_handler(|invoke| {
+            invoke
+                .resolver
+                .reject(serde_json::json!({ "code": "auth.forbidden" }));
+            true
+        })
         .setup(|app, api| {
             let handle = api.register_android_plugin("app.mavyn.files", "MavynFilesPlugin")?;
             app.manage(Files(handle));

@@ -3,12 +3,13 @@ import '@mdr/ui/styles.css';
 import { createI18n, detectLocale, I18nextProvider } from '@mdr/i18n';
 import { render } from '@mdr/markdown-engine';
 import { toAppError } from '@mdr/core';
-import { addFiles, AppShell, initWorkspace, notifyError, ServicesProvider, usePreferences, type AppServices } from '@mdr/ui';
+import { addFiles, AppShell, initSync, initWorkspace, notifyError, ServicesProvider, usePreferences, type AppServices } from '@mdr/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TauriPlatformAdapter } from './tauri-platform.ts';
 import { openNativeLibrary } from './storage.ts';
 import { startIncoming } from './incoming.ts';
+import { createNativeSync } from './native-sync.ts';
 
 declare const __APP_VERSION__: string;
 
@@ -21,12 +22,14 @@ async function boot(): Promise<void> {
   root.render(<p role="status">{i18n.t('app.loading')}</p>);
   try {
     const platform = await TauriPlatformAdapter.create();
+    const library = await openNativeLibrary();
     const services: AppServices = {
-      library: await openNativeLibrary(),
+      library,
       platform,
       i18n,
       renderMarkdown: async (source, options) => render(source, options),
       appVersion: __APP_VERSION__,
+      ...await createNativeSync(library),
     };
     root.render(
       <StrictMode>
@@ -39,6 +42,7 @@ async function boot(): Promise<void> {
     );
     await initWorkspace(services);
     await startIncoming(platform, addFiles, notifyError);
+    void initSync(services).catch(notifyError);
   } catch (cause) {
     const error = toAppError(cause);
     root.render(<main className="p-5 grid gap-3">

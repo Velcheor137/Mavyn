@@ -1,6 +1,6 @@
 [package]
 name = "mavyn-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 
@@ -20,6 +20,7 @@ sha2 = "0.10"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 mavyn-local-store = { path = "../../../crates/local-store" }
+mavyn-native-sync = { path = "../../../crates/native-sync" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-mavyn-files = { path = "../../../crates/tauri-plugin-mavyn-files" }

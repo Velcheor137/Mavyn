@@ -1,5 +1,11 @@
 #!/bin/sh
 
+# Explicit installed distribution override for offline/hosted CI environments.
+# Ordinary local builds retain the checksum-verified wrapper distribution below.
+if [ -n "${MAVYN_GRADLE_BIN:-}" ]; then
+    exec "$MAVYN_GRADLE_BIN" "$@"
+fi
+
 #
 # Copyright © 2015 the original authors.
 #

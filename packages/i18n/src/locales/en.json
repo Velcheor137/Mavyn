@@ -250,7 +250,12 @@
     "keepBothHint": "Keep both: the server version stays here, your text moves to a separate local document.",
     "myCopy": "my version",
     "showServer": "Show server version",
-    "hideServer": "Hide server version"
+    "hideServer": "Hide server version",
+    "serverAddress": "Server address",
+    "serverPlaceholder": "https://notes.example",
+    "serverAddressHint": "Use an HTTPS origin without a path. Sign out before changing servers. HTTP is allowed only for loopback development.",
+    "saveServer": "Save server",
+    "noNativeServer": "Configure a sync server to connect. Your local documents remain available offline."
   },
   "errors": {
     "edit.invalid_range": "The edit could not be applied.",
@@ -288,7 +293,8 @@
     "folder.cycle": "A folder cannot be moved inside itself or its subfolders.",
     "storage.busy": "The local database is busy in another window. Try again shortly.",
     "storage.schema_unsupported": "This library was created by another database version. Update the app before opening it.",
-    "storage.migration_conflict": "Both the old library and a native library exist. Neither was overwritten. Export or back up both before merging them."
+    "storage.migration_conflict": "Both the old library and a native library exist. Neither was overwritten. Export or back up both before merging them.",
+    "server.invalid_url": "Enter an HTTPS server address without credentials, path, query, or fragment."
   },
   "a11y": {
     "toggleSidebar": "Toggle sidebar",

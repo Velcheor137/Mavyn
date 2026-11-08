@@ -5,6 +5,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class IncomingStoreTest {
+    @Test fun interruptedAcknowledgementCannotBlockTheNextDocument() {
+        val root = Files.createTempDirectory("mavyn-incoming").toFile()
+        try {
+            val store = IncomingStore(root)
+            val one = store.put("one.md", byteArrayOf(1))
+            val two = store.put("two.md", byteArrayOf(2))
+            val interrupted = IncomingStore(root) { entry ->
+                java.io.File(entry, "name").delete()
+                throw IllegalStateException("Simulated process death during deletion")
+            }
+            try { interrupted.ack(one); fail() } catch (_: IllegalStateException) { }
+            val restored = IncomingStore(root)
+            assertEquals(two, restored.peek()!!.id)
+            assertFalse(java.io.File(root, one).exists())
+            assertFalse(java.io.File(root, ".done-$one").exists())
+        } finally { root.deleteRecursively() }
+    }
     @Test fun rejectsInvalidUtf8AndRemovesOnlyInterruptedPrivateSnapshots() {
         val root = Files.createTempDirectory("mavyn-incoming").toFile()
         try {

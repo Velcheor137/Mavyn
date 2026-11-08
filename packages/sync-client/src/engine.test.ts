@@ -35,6 +35,38 @@ async function device(server: FakeServer, name: string) {
 }
 
 describe('SyncEngine', () => {
+  it.each(['mine', 'server', 'both'] as const)('drains %s conflict resolution before retirement and never restarts the old identity', async (resolution) => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const doc = await a.library.createDocument({ text: 'base', fileName: 'retire.md', folderId: a.folder.id });
+    await a.engine.syncNow();
+    await a.edit(doc.id, 'mine');
+    await server.edit(doc.id, 'theirs');
+    await a.engine.syncNow();
+    expect((await a.library.getDocument(doc.id)).remote?.conflict).not.toBeNull();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const api = server.client();
+    let calls = 0;
+    const engine = new SyncEngine(a.library, { ...api, getDocument: async (id) => {
+      calls++; started(); await gate; return api.getDocument(id);
+    } }, a.connection, { saveConnection: async () => {} });
+    const work = resolution === 'mine' ? engine.keepMine(doc.id) : resolution === 'server' ? engine.useServer(doc.id) : engine.keepBoth(doc.id, 'copy');
+    await entered;
+    let retired = false;
+    const stop = engine.stopAndWait().then(() => { retired = true; });
+    try {
+      await Promise.resolve(); await Promise.resolve();
+      expect(retired).toBe(false);
+    } finally { release(); await Promise.all([work, stop]); }
+    await a.library.updateMeta(doc.id, { remote: null });
+    const before = calls;
+    await engine.syncNow();
+    expect(calls).toBe(before);
+    expect((await a.library.getDocument(doc.id)).remote).toBeNull();
+  });
   it('uploads local documents in the synced folder and pulls them on another device', async () => {
     const server = new FakeServer();
     const a = await device(server, 'a');

@@ -32,6 +32,7 @@ export type ErrorCode =
   | 'request.rate_limited'
   | 'library.not_found'
   | 'server.unavailable'
+  | 'server.invalid_url'
   | 'setup.invalid_token'
   | 'setup.already_completed'
   | 'user.weak_password'

@@ -4,7 +4,7 @@ import { render } from '@mdr/markdown-engine';
 import type { PlatformAdapter } from '@mdr/platform';
 import { Library, MemoryBackend } from '@mdr/storage';
 import { FakeServer } from '@mdr/sync-client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell, DEFAULT_PREFERENCES, getSession, initSync, initWorkspace, openDocument, resetSyncForTests, resetWorkspaceForTests, ServicesProvider, usePreferences, useSync, useWorkspace, type AppServices } from './index.ts';
 import { connectLibrary, signIn, syncNow } from './sync.ts';
 
@@ -29,6 +29,37 @@ describe('sync in the app', () => {
     cleanup();
     resetSyncForTests();
     resetWorkspaceForTests();
+  });
+
+  it('restores native synchronization when a server returns after an offline start', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = new FakeServer();
+      let online = false;
+      const configured = { baseUrl: 'https://native.example', api: server.client(), health: async () => online };
+      const services: AppServices = { library: new Library(new MemoryBackend()), platform, i18n: createI18n('en'), renderMarkdown: async (source, options) => render(source, options), appVersion: 'test', server: configured, configureServer: async () => configured };
+      await initWorkspace(services);
+      await initSync(services);
+      expect(useSync.getState().available).toBe(false);
+      online = true;
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(useSync.getState().available).toBe(true);
+      expect(useSync.getState().user?.username).toBe('tester');
+    } finally { resetSyncForTests(); vi.useRealTimers(); }
+  });
+
+  it('never restores a mapping for another server even when the user id matches', async () => {
+    const server = new FakeServer();
+    const library = new Library(new MemoryBackend());
+    const folder = await library.createFolder('Previous server');
+    await library.putSetting('sync.connection', { serverId: 'https://old.example|user', baseUrl: 'https://old.example', userId: 'user', username: 'tester', libraryId: server.libraryId, libraryName: 'Old', folderId: folder.id, cursor: '' });
+    const services: AppServices = { library, platform, i18n: createI18n('en'), renderMarkdown: async (source, options) => render(source, options), appVersion: 'test', server: { baseUrl: 'https://new.example', api: server.client(), health: async () => true } };
+    await initWorkspace(services);
+    await initSync(services);
+    expect(useSync.getState().connection).toBeNull();
+    await signIn('tester', 'a long passphrase');
+    expect(useSync.getState().connection).toBeNull();
+    expect(useSync.getState().libraries).toHaveLength(1);
   });
 
   it('signs in, pulls a library, and resolves a conflict by keeping both versions', async () => {

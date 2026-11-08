@@ -72,8 +72,8 @@ upgrade-test override, not a way to reuse an old public version. Prerelease name
 increasing code before distributing multiple builds.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The tag must match `apps/desktop/src-tauri/tauri.conf.json`. The release workflow validates CI,

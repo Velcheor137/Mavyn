@@ -33,6 +33,7 @@ import java.util.concurrent.Executors
 }
 @InvokeArg class SaveArgs { lateinit var name: String; lateinit var bytesBase64: String }
 @InvokeArg class AckArgs { lateinit var id: String }
+@InvokeArg class SessionArgs { lateinit var key: String; var value: String = "" }
 
 @TauriPlugin
 class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
@@ -41,6 +42,20 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
     private val io = Executors.newSingleThreadExecutor()
     private var pickerBusy = false
     private val incoming by lazy { IncomingStore(java.io.File(activity.noBackupFilesDir, "incoming")) }
+    private val sessions by lazy { SecureSessions(java.io.File(activity.noBackupFilesDir, "sessions")) }
+
+    @Command fun readSession(invoke: Invoke) { io.execute { answer(invoke) {
+        sessions.read(invoke.parseArgs(SessionArgs::class.java).key) ?: org.json.JSONObject.NULL
+    } } }
+    @Command fun storeSession(invoke: Invoke) { io.execute { answer(invoke) {
+        val args = invoke.parseArgs(SessionArgs::class.java)
+        sessions.write(args.key, args.value)
+        true
+    } } }
+    @Command fun clearSession(invoke: Invoke) { io.execute { answer(invoke) {
+        sessions.delete(invoke.parseArgs(SessionArgs::class.java).key)
+        true
+    } } }
 
     override fun load(webView: WebView) { receive(activity.intent) }
     override fun onNewIntent(intent: Intent) { receive(intent) }
@@ -72,7 +87,7 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
                     if (uri.scheme != "content") throw SafFailure("file.unsupported")
                     // Never let an external Intent read this application's private FileProvider.
                     val provider = activity.packageManager.resolveContentProvider(uri.authority ?: "", 0)
-                    if (provider?.applicationInfo?.uid == android.os.Process.myUid()) throw SafFailure("file.permission_denied")
+                    SafPolicy.requireIncomingUri(uri.toString(), provider?.applicationInfo?.uid, android.os.Process.myUid())
                     val fileName = name(uri)
                     SafPolicy.requireName(fileName)
                     incoming.put(fileName, read(uri))

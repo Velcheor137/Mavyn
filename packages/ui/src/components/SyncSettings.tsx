@@ -1,13 +1,38 @@
 import { useTranslation } from '@mdr/i18n';
 import { useState, type FormEvent } from 'react';
 import { useRelativeTime } from '../hooks.ts';
-import { connectLibrary, signIn, signOut, syncNow, useSync } from '../sync.ts';
+import { configureSyncServer, connectLibrary, signIn, signOut, syncNow, useSync } from '../sync.ts';
+import { useServices } from '../services.tsx';
 import { SetupForm } from './SetupForm.tsx';
 import { SyncStatus } from './SyncStatus.tsx';
 
 /** Settings section: sign in to the server serving this app and choose the library to sync. */
 export function SyncSettings({ showSignOut = true }: { showSignOut?: boolean }) {
+  return <div className="grid gap-3"><ServerAddress /><SyncAccountSettings showSignOut={showSignOut} /></div>;
+}
+
+function ServerAddress() {
   const { t } = useTranslation();
+  const services = useServices();
+  const { user, busy, available, error } = useSync();
+  const [url, setUrl] = useState(services.server?.baseUrl ?? '');
+  if (!services.configureServer) return null;
+  if (user) return <p className="muted small">{services.server?.baseUrl}</p>;
+  return <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void configureSyncServer(url); }}>
+    <label className="field" htmlFor="sync-server-url">
+      <span className="field-label">{t('sync.serverAddress')}</span>
+      <input id="sync-server-url" className="input" type="url" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        placeholder={t('sync.serverPlaceholder')} value={url} onChange={(event) => setUrl(event.currentTarget.value)} />
+    </label>
+    <p className="muted small">{t('sync.serverAddressHint')}</p>
+    <button type="submit" className="button justify-self-start" disabled={busy}>{t('sync.saveServer')}</button>
+    {!available && error && <p className="text-danger small" role="alert">{t(`errors.${error}` as 'errors.unknown')}</p>}
+  </form>;
+}
+
+function SyncAccountSettings({ showSignOut }: { showSignOut: boolean }) {
+  const { t } = useTranslation();
+  const { platform } = useServices();
   const { available, needsSetup, user, connection, libraries, busy, error, state } = useSync();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -18,7 +43,7 @@ export function SyncSettings({ showSignOut = true }: { showSignOut?: boolean }) 
   const errorText = error ? <p className="text-danger small" role="alert">{t(`errors.${error}` as 'errors.unknown')}</p> : null;
 
   if (available === null) return <p className="muted">{t('sync.checking')}</p>;
-  if (!available) return <p className="muted">{t('sync.noServer')}</p>;
+  if (!available) return <p className="muted">{t(platform.kind === 'web' ? 'sync.noServer' : 'sync.noNativeServer')}</p>;
   if (needsSetup) return <SetupForm />;
 
   if (!user) {

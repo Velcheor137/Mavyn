@@ -7,7 +7,7 @@ import java.util.UUID
 data class IncomingFile(val id: String, val name: String, val bytes: ByteArray)
 
 /** Private snapshots outlive the sender's temporary grant. All calls use the plugin IO executor. */
-class IncomingStore(private val root: File) {
+class IncomingStore(private val root: File, private val removeTree: (File) -> Boolean = { it.deleteRecursively() }) {
     companion object {
         const val MAX_ENTRIES = 32
         private const val MAX_TOTAL = 64L * 1024 * 1024
@@ -15,7 +15,8 @@ class IncomingStore(private val root: File) {
     }
 
     init {
-        root.listFiles()?.filter { it.isDirectory && it.name.startsWith('.') && ID.matches(it.name.drop(1)) }
+        root.listFiles()?.filter { it.isDirectory &&
+            (it.name.startsWith('.') && ID.matches(it.name.drop(1)) || it.name.startsWith(".done-") && ID.matches(it.name.drop(6))) }
             ?.forEach { if (!it.deleteRecursively()) throw SafFailure("storage.failed") }
     }
 
@@ -52,7 +53,11 @@ class IncomingStore(private val root: File) {
     fun ack(id: String) {
         if (ID.matches(id)) {
             val entry = File(root, id)
-            if (entry.exists() && !entry.deleteRecursively()) throw SafFailure("storage.failed")
+            if (entry.exists()) {
+                val done = File(root, ".done-$id")
+                if (!entry.renameTo(done)) throw SafFailure("storage.failed")
+                if (!removeTree(done)) throw SafFailure("storage.failed")
+            }
         }
     }
 }

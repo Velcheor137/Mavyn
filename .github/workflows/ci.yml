@@ -28,6 +28,9 @@ jobs:
       - run: cargo clippy --manifest-path crates/local-store/Cargo.toml --all-targets --locked -- -D warnings
       - run: cargo test --manifest-path crates/local-store/Cargo.toml --locked
       - run: cargo build --manifest-path crates/local-store/Cargo.toml --example storage_bridge --locked
+      - run: cargo fmt --manifest-path crates/native-sync/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/native-sync/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path crates/native-sync/Cargo.toml --locked
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - name: Test web and real SQLite contracts
@@ -75,6 +78,7 @@ jobs:
       - run: rustup toolchain install 1.95.0 --profile minimal --target aarch64-linux-android
       - run: rustup default 1.95.0
       - run: bash scripts/android-sdk.sh
+      - run: bash scripts/ci-gradle.sh
       - run: echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - run: npm ci --no-audit --no-fund
       - name: Build ARM64 debug APK without signing secrets

@@ -18,6 +18,8 @@ export interface AppServices {
   appVersion: string;
   /** Sync server serving this app (web: same origin). Absent when sync is unavailable. */
   server?: { baseUrl: string; api: SyncApi; health(): Promise<boolean> };
+  /** Native apps can configure an HTTPS origin; credentials are held by the OS vault. */
+  configureServer?(url: string): Promise<AppServices['server']>;
 }
 
 const ServicesContext = createContext<AppServices | null>(null);

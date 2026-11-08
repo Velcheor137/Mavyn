@@ -30,6 +30,9 @@ export const useSync = create<SyncStore>(() => ({
 
 let services: AppServices | null = null;
 let engine: SyncEngine | null = null;
+let generation = 0;
+let removeListeners: (() => void) | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function server() {
   const s = services?.server;
@@ -62,39 +65,79 @@ function startEngine(connection: SyncConnection): void {
   engine.start();
 }
 
-/** Detects a same-origin server, restores the session cookie and the saved connection. */
+function ownsConnection(saved: SyncConnection | null | undefined, user: UserInfo): saved is SyncConnection {
+  const baseUrl = server().baseUrl;
+  return Boolean(saved && saved.userId === user.id && saved.baseUrl === baseUrl && saved.serverId === `${baseUrl}|${user.id}`);
+}
+
+/** Restores a session and mapping only for the configured server and signed-in identity. */
 export async function initSync(appServices: AppServices): Promise<void> {
+  const current = ++generation;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  await engine?.stopAndWait();
+  if (current !== generation) return;
+  engine = null;
+  removeListeners?.();
+  removeListeners = null;
   services = appServices;
-  if (!appServices.server) {
-    useSync.setState({ available: false });
-    return;
-  }
-  const available = await appServices.server.health();
-  useSync.setState({ available });
-  if (!available) return;
-  globalThis.addEventListener?.('online', () => engine?.schedule(0));
-  globalThis.document?.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') engine?.schedule(0);
-  });
+  useSync.setState({ available: null, needsSetup: false, user: null, connection: null, state: null, libraries: [], error: null, busy: true });
   try {
-    if (await appServices.server.api.needsSetup()) {
+    if (!appServices.server) {
+      useSync.setState({ available: false });
+      return;
+    }
+    const available = await appServices.server.health();
+    if (current !== generation) return;
+    useSync.setState({ available });
+    if (!available) {
+      if (appServices.configureServer) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          if (current === generation) void initSync(appServices).catch((error: unknown) => useSync.setState({ error: toSyncAppError(error).code }));
+        }, 15000);
+      }
+      return;
+    }
+    const online = () => engine?.schedule(0);
+    const visible = () => {
+      if (document.visibilityState === 'visible') engine?.schedule(0);
+    };
+    globalThis.addEventListener?.('online', online);
+    globalThis.document?.addEventListener('visibilitychange', visible);
+    removeListeners = () => {
+      globalThis.removeEventListener?.('online', online);
+      globalThis.document?.removeEventListener('visibilitychange', visible);
+    };
+    const needsSetup = await appServices.server.api.needsSetup();
+    if (current !== generation) return;
+    if (needsSetup) {
       useSync.setState({ needsSetup: true });
       return;
     }
-  } catch (error) {
-    useSync.setState({ error: toSyncAppError(error).code });
-    return;
-  }
-  try {
     const user = await appServices.server.api.me();
+    if (current !== generation) return;
     useSync.setState({ user });
     const saved = await appServices.library.getSetting<SyncConnection>(SYNC_CONNECTION_KEY);
     // A connection belongs to one account; never sync another user's copies.
-    if (saved && saved.userId === user.id) startEngine(saved);
+    if (current !== generation) return;
+    if (ownsConnection(saved, user)) startEngine(saved);
     else await loadLibraries();
   } catch (error) {
-    if (toSyncAppError(error).code !== 'auth.required') useSync.setState({ error: toSyncAppError(error).code });
-  }
+    if (current === generation && toSyncAppError(error).code !== 'auth.required') useSync.setState({ error: toSyncAppError(error).code });
+  } finally { if (current === generation) useSync.setState({ busy: false }); }
+}
+
+export async function configureSyncServer(url: string): Promise<void> {
+  if (!services?.configureServer || useSync.getState().user || useSync.getState().busy) return;
+  useSync.setState({ busy: true, error: null });
+  try {
+    const configured = await services.configureServer(url);
+    if (configured) services.server = configured;
+    else delete services.server;
+    await initSync(services);
+  } catch (error) { useSync.setState({ error: toSyncAppError(error).code }); }
+  finally { useSync.setState({ busy: false }); }
 }
 
 async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
@@ -132,7 +175,7 @@ export function signIn(username: string, password: string): Promise<void> {
     const user = await server().api.login(username, password);
     useSync.setState({ user });
     const saved = await services!.library.getSetting<SyncConnection>(SYNC_CONNECTION_KEY);
-    if (saved && saved.userId === user.id) startEngine(saved);
+    if (ownsConnection(saved, user)) startEngine(saved);
     else await loadLibraries();
   }) as Promise<void>;
 }
@@ -180,7 +223,7 @@ export function syncNow(): Promise<void> {
 export function signOut(removeCopies: boolean): Promise<void> {
   return run(async () => {
     const connection = useSync.getState().connection;
-    engine?.stop();
+    await engine?.stopAndWait();
     engine = null;
     const local = services!.library;
     if (connection) {
@@ -228,6 +271,11 @@ export function serverText(id: string): Promise<string> {
 
 /** For tests. */
 export function resetSyncForTests(): void {
+  generation++;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  removeListeners?.();
+  removeListeners = null;
   engine?.stop();
   engine = null;
   services = null;

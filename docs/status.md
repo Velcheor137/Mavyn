@@ -177,3 +177,24 @@ refresh may replace it. The heading-derived display title is unchanged by rename
   and upgrade validation are still in progress; this does not imply physical-phone validation.
 - Added CI/release/container workflows and signing instructions. GitHub signing secrets were
   provisioned securely. Actions runtime results are pending; no public release/tag was created.
+
+## Native synchronization continuation — 2026-11-08
+
+- Added restricted native HTTP transport and native server settings. HTTPS origins only, with
+  loopback HTTP for development; redirects are refused and API routes/methods/body sizes are
+  bounded. Login responses are redacted before returning to JavaScript. Windows stores bearer
+  credentials in Credential Manager; Android encrypts them with an Android Keystore AES-GCM
+  key and excludes the encrypted files from backup. Direct webview plugin calls are rejected.
+- Saved mappings require both URL and user identity. Logout retires and drains normal sync,
+  conflict resolutions and diff requests before removing the local session. Native startup
+  retries a configured server that was unavailable at launch. Linux native sync remains disabled.
+- Verified against a real local Rust/Axum server and isolated PostgreSQL 18: Android release UI
+  configured a server, signed in, pulled a document and pushed a checkbox edit. Windows native
+  processes saved/restored the session through Credential Manager; the Windows GUI restored
+  that session, connected the library and displayed the Android edit. A checkbox edit from
+  Windows reached the server too. Local TypeScript and 180 Vitest tests (real SQLite bridge),
+  9 Kotlin policy/mailbox tests and 3 native HTTP tests passed; Linux and Windows Clippy passed.
+- A separate signer installed release 0.1.0 and upgraded it to 0.1.1 (versionCode 1000 -> 1001)
+  on the x86_64 emulator without removing its document. ARM64 release signature, package,
+  non-debuggable flag and 16 KB ZIP alignment verified. Final GUI offline/logout checks and
+  CI Android checks are still in progress. No physical ARM64 phone is attached.

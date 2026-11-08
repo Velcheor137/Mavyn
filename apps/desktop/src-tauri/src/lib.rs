@@ -7,6 +7,7 @@ use tauri::{Manager, State};
 mod android;
 #[cfg(not(target_os = "android"))]
 mod desktop;
+mod sync;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +79,9 @@ pub fn run() {
             mavyn_local_store::StoreHost::new(dir.join("library.sqlite3"))
                 .map_err(std::io::Error::other)?,
         ));
+        app.manage(Arc::new(sync::SyncHost(std::sync::Mutex::new(
+            mavyn_native_sync::Client::new().map_err(std::io::Error::other)?,
+        ))));
         #[cfg(not(target_os = "android"))]
         desktop::setup(app)?;
         Ok(())
@@ -93,6 +97,9 @@ pub fn run() {
                 desktop::write_linked,
                 desktop::save_as,
                 local_store,
+                sync::native_sync_supported,
+                sync::native_sync_url,
+                sync::native_sync_request,
                 platform_kind
             ]);
     #[cfg(target_os = "android")]
@@ -106,6 +113,9 @@ pub fn run() {
             android::write_linked,
             android::save_as,
             local_store,
+            sync::native_sync_supported,
+            sync::native_sync_url,
+            sync::native_sync_request,
             platform_kind
         ]);
     builder

@@ -37,4 +37,13 @@ object SafPolicy {
         val contentUri = try { URI(locator).scheme == "content" } catch (_: Exception) { false }
         if (!contentUri || !allowed || !read || !write) throw SafFailure("file.permission_denied")
     }
+
+    fun requireIncomingUri(locator: String, providerUid: Int?, ownUid: Int) {
+        val uri = try { URI(locator) } catch (_: Exception) { throw SafFailure("file.permission_denied") }
+        val authority = uri.rawAuthority ?: throw SafFailure("file.permission_denied")
+        // ContentResolver interprets userId@authority; PackageManager does not. Reject
+        // encoded/user-qualified authorities rather than resolving a different provider.
+        if (uri.scheme != "content" || uri.rawUserInfo != null || authority.contains('%') || authority.contains(':') ||
+            providerUid == null || providerUid == ownUid) throw SafFailure("file.permission_denied")
+    }
 }
