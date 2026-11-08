@@ -17,6 +17,18 @@ both pinned SHA-256 and Tauri's own SHA-1 values before extraction; bundler veri
 
 ## Android identity
 
+### Launcher artwork
+
+Android uses the same artwork as the Windows installer: `apps/desktop/src-tauri/icons/icon.png`.
+Generate density-specific PNGs with `tauri icon` into a temporary directory, then copy its
+`android/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher*.png` into the Android app's `res`
+directories. Keep the checked-in adaptive-icon XML: it uses the matching purple background and
+a 6 dp foreground inset to protect the mark from launcher masks. Both normal and round launcher
+references have adaptive resources on API 26+, with PNG fallbacks for API 24–25. Do not restore
+the generated Android/Tauri template artwork or use the stale `icons/icon.svg` as the source.
+
+### Package and toolchain
+
 Application ID: `app.mavyn.desktop`. Minimum Android API 24; target/compile API 36.
 Build with Node from `.node-version`, Rust 1.95.0 (local Android also verified with 1.93.1),
 JDK 21, SDK/build-tools 36.0.0, NDK 27.2.12479018. Install Rust target
