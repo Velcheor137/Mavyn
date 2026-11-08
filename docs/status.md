@@ -225,3 +225,16 @@ refresh may replace it. The heading-derived display title is unchanged by rename
   logout sequence after interruption. Automatic tool review rejected restarting the emulator
   with `blocked by policy`; no bypass was attempted. Unit coverage for native startup retry
   and conflict/logout retirement passed, but is not a substitute for that missing GUI check.
+
+## Authorized GitHub Release — 2026-11-08
+
+- On the owner's explicit request, annotated tag `v0.1.1` was pushed for the verified
+  application/build commit `4e39c1a`. No application changes were made for publication.
+- [Release run 42491218576](https://github.com/Velcheor137/Mavyn/actions/runs/42491218576)
+  passed validation, Windows x64 NSIS, Linux x86_64 DEB/RPM, signed Android ARM64 APK,
+  checksum aggregation and publication. The separate container smoke/multiarch stage
+  started afterward; its completion is not implied by the package publication result.
+- [GitHub Release v0.1.1](https://github.com/Velcheor137/Mavyn/releases/tag/v0.1.1) is published
+  (not a draft) with all four packages and `SHA256SUMS.txt`. All assets have upload state
+  `uploaded`; their GitHub SHA-256 digests match the published checksum manifest.
+  Physical-device and final Android GUI limitations above still apply.

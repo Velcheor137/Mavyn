@@ -70,7 +70,8 @@ Repository Actions Secrets:
 
 Repository Actions Variable `MAVYN_ANDROID_CERT_SHA256` contains the public fingerprint above.
 These values were provisioned on 2026-11-08 using GitHub's sealed-box public-key API.
-The keystore is restored only for tag builds and removed afterward; missing secrets fail the job.
+The keystore is restored only in the release workflow (tag builds or trusted manual package
+validation) and removed afterward; missing secrets fail the job.
 Use GitHub-hosted ephemeral runners for releases and protect main/version tags from unreviewed writes.
 
 ## Publishing an authorized version
@@ -91,7 +92,10 @@ builds Windows x64 NSIS, Linux x86_64 DEB/RPM, and signed Android ARM64 APK. Eac
 artifact is uploaded under a separate job name; aggregation requires the complete set and
 generates `SHA256SUMS.txt`. The GitHub Release stays draft until all uploads succeed. Tags with
 `-` produce prereleases. Reruns can repair a draft, but refuse to modify a published release.
-No release tag has been created by this setup task.
+The owner authorized publication after setup. Release
+[v0.1.1](https://github.com/Velcheor137/Mavyn/releases/tag/v0.1.1) was published on 2026-11-08
+from the verified application/build commit `4e39c1a`, with all four platform packages and
+`SHA256SUMS.txt`. The subsequent main commit before tagging changed documentation only.
 
 Windows installs may show SmartScreen/unknown publisher warnings: no trusted Windows publisher
 certificate is configured. Linux bundles use Ubuntu 24.04 and WebKitGTK 4.1; older distributions

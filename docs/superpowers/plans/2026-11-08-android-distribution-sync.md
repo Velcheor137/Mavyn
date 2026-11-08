@@ -35,3 +35,9 @@ tool review then rejected restarting the emulator (`blocked by policy`). Do not 
 check or a physical ARM64 phone as verified. Portable signing-key backup remains owner-managed
 as documented in docs/releases.md; the existing DPAPI-protected key and GitHub Secrets are not
 an off-machine recovery backup.
+
+Separate follow-up authorization: the owner explicitly requested a GitHub Release with platform
+packages. Tag `v0.1.1` was pushed for tested build commit `4e39c1a`; release run 42491218576
+completed every mandatory platform/checksum/publication job. The published release contains
+Android ARM64 APK, Windows x64 NSIS EXE, Linux x86_64 DEB/RPM and SHA256SUMS.txt; asset digests
+were verified through the GitHub API. Container jobs run as a separate subsequent stage.
