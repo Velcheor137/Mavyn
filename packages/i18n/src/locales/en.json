@@ -95,6 +95,7 @@
     "importHint": "The library keeps its own copy with history. The original file is not changed.",
     "link": "Edit the original file",
     "linkHint": "Changes are saved to the file on disk. Requires browser permission.",
+    "linkHintNative": "Changes are saved to the original file. Choose a writable file in the system picker.",
     "linkUnsupported": "This browser cannot edit files in place; the file will be copied into the library.",
     "cancel": "Cancel"
   },
@@ -260,6 +261,7 @@
     "file.permission_denied": "Permission to access the file was denied.",
     "file.not_found": "The file was not found.",
     "file.unsupported": "This file type is not supported.",
+    "file.write_unsupported": "This storage provider cannot safely update the file. Export a Markdown copy instead.",
     "storage.quota_exceeded": "Storage is full. Free some space and try again.",
     "storage.failed": "Local storage failed.",
     "document.not_found": "The document no longer exists.",

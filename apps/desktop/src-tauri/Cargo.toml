@@ -13,7 +13,6 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -21,6 +20,12 @@ sha2 = "0.10"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 mavyn-local-store = { path = "../../../crates/local-store" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-mavyn-files = { path = "../../../crates/tauri-plugin-mavyn-files" }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri-plugin-dialog = "2"
 
 [lints.rust]
 unsafe_code = "forbid"

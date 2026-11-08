@@ -19,7 +19,7 @@ async function boot(): Promise<void> {
   const i18n = createI18n(locale);
   root.render(<p role="status">{i18n.t('app.loading')}</p>);
   try {
-    const platform = new TauriPlatformAdapter();
+    const platform = await TauriPlatformAdapter.create();
     const services: AppServices = {
       library: await openNativeLibrary(),
       platform,

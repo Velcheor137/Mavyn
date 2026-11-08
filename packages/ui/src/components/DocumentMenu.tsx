@@ -55,10 +55,10 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
             <FileCode size={15} aria-hidden />
             {t('document.exportHtml')}
           </Menu.Item>
-          <Menu.Item className="menu-item" onSelect={() => window.print()}>
+          {platform.capabilities.print && <Menu.Item className="menu-item" onSelect={() => window.print()}>
             <Printer size={15} aria-hidden />
             {t('document.print')}
-          </Menu.Item>
+          </Menu.Item>}
           <Menu.Separator className="menu-separator" />
           <Menu.Item className="menu-item menu-item-danger" onSelect={() => void trashDocument(meta.id)}>
             <Trash2 size={15} aria-hidden />

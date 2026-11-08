@@ -1,0 +1,7 @@
+{
+  "identifier": "android",
+  "description": "Android main window: core UI; file access is limited by the SAF native bridge.",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

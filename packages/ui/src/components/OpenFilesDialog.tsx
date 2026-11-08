@@ -34,7 +34,7 @@ export function OpenFilesDialog({ open, onOpenChange }: { open: boolean; onOpenC
           <Link2 size={18} aria-hidden />
           <span>
             <strong>{t('open.link')}</strong>
-            <span className="muted">{t('open.linkHint')}</span>
+            <span className="muted">{t(platform.kind === 'web' ? 'open.linkHint' : 'open.linkHintNative')}</span>
           </span>
         </button>
         {!canLink && (

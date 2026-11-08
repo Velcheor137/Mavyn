@@ -47,7 +47,7 @@ Rules:
 | Linked files | File System Access API where available (Chromium); otherwise import-only + "save as" download | Real paths via Rust commands, atomic save | SAF `content://` URIs with persisted permissions; copy/save-as fallback |
 | Full-text search | In-memory inverted index built in a worker from IndexedDB, persisted per identity | SQLite FTS5 (`unicode61 remove_diacritics 2`) + prefix queries | same as desktop |
 | Secrets | HttpOnly cookie session; nothing in JS storage | OS keyring (keyring crate) | Android Keystore-backed storage |
-| File associations | `launch_handler`/`file_handlers` in manifest (Chromium only) | NSIS/MSI associations, XDG `.desktop` MimeType | intent filters ACTION_VIEW / ACTION_SEND |
+| File associations | `launch_handler`/`file_handlers` in manifest (Chromium only) | NSIS/MSI associations, XDG `.desktop` MimeType | System picker; VIEW/SEND associations deferred |
 
 Capabilities are exposed as flags on `PlatformAdapter.capabilities`, and the UI hides or degrades
 features accordingly instead of failing at call time.
@@ -149,8 +149,12 @@ proportional to the old database; large migration budgets remain unmeasured.
 Native (Rust): atomic save = write `name.tmp-<uuid>` in the same directory → `fsync` → rename over
 original (`std::fs::rename`) → `fsync` directory (Unix). Before saving a linked file, the
 stored content hash is compared even when mtime/size are unchanged; mismatch → `external_change` conflict, never
-overwrite. Android SAF: write via `ContentResolver.openOutputStream(uri, "wt")`; providers that do
-not support truncation get a save-as fallback.
+overwrite. Android SAF uses a private URI allow-list plus persisted OS read/write grants.
+Linked saving verifies the current SHA256, opens a non-truncating `rw` descriptor, checks
+its hash again, requires a regular seekable file and probes truncation at the existing length
+before writing/truncating/fsync. Unsupported providers get a localized export-copy explanation.
+Export uses `ACTION_CREATE_DOCUMENT` with the appropriate MIME type. SAF writes cannot offer
+universal atomic replacement or exclusion of another writer after the final hash check.
 
 Web: managed docs in IndexedDB (`documents`, `contents` by hash, `revisions`, `outbox`, `settings`),
 one database per identity (`mdreader:<serverId>:<userId>` or `mdreader:local`). Linked files via

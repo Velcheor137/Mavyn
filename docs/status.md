@@ -22,8 +22,40 @@ are inherited platform checks, not reruns on this Windows machine.
   fmt and Clippy with warnings denied. Whole-shell Linux cargo check and Clippy passed
   with the native SQLite engine. Windows GUI verification is recorded below; no Android device test.
 - One-time legacy migration currently allocates a consistent snapshot of the old database;
-  memory requirements for very large libraries remain unmeasured. Android SAF and device
-  validation are still pending.
+  memory requirements for very large libraries remain unmeasured. Android continuation and
+  emulator verification are recorded below; physical-device validation remains pending.
+
+## Android SAF continuation — 2026-11-08
+
+- Added the Android Gradle project and an Android-only Kotlin/Rust SAF plugin. System
+  document selection supports managed import and persistent read/write links; export creates
+  a separate document. URI allow-list and current persisted grants are checked on each access.
+  There is no broad storage permission. Desktop file commands remain in a separate module.
+- Built debug-signed ARM64 and x86_64 APKs with Rust 1.93.1, JDK 21, SDK/build-tools 36,
+  NDK 27.2.12479018, Gradle 9.6.1 and AGP 9.3.1. Minimum API 24, target API 36.
+  Native ELF LOAD segments are 16 KB aligned. APK signature and ZIP alignment checks passed.
+- Ran the x86_64 app on Android 16/API 36 in the Windows WHPX emulator: SAF import,
+  Cyrillic Markdown, exact second-duplicate task edit, autosave, relaunch and SQLite audit.
+  SQLite WAL/quick_check, exact content hashes, BOM/CRLF and Russian/English FTS5 were verified;
+  the imported source stayed unchanged. Library state survived app and emulator restarts.
+- Linked-file saving wrote the actual provider file. A retained ExternalStorageProvider grant
+  allowed another write after force-stop/relaunch without reselecting the file. A same-size,
+  same-mtime in-place external edit produced the conflict UI and preserved external bytes;
+  loading the newer version updated SQLite/FTS5. Replacing a MediaDocumentsProvider file via
+  adb revoked its grant; the app refused access instead of overwriting it.
+- Fixed system-bar overlap for Android edge-to-edge rendering and included IME/cutout insets.
+  Disabled desktop printing and VIEW/SEND associations on Android. Export uses format-specific
+  MIME types; generic binary MIME had put collision suffixes after the Markdown extension.
+  Repeated export preserved `.md` and exact bytes. Source-editor typing with the soft keyboard
+  visible saved to the linked file with BOM/CRLF intact; the editor viewport stayed above the IME.
+- Verification: strict TypeScript, 172 Vitest tests including the real Rust/SQLite bridge
+  (`--maxWorkers 2 --testTimeout 15000` for WSL startup), four Kotlin policy tests through
+  Gradle, desktop frontend build and Windows MSVC cross-Clippy. Initial bridge runs hit the
+  default five-second startup limit while builds/emulation competed for host memory.
+- Physical ARM64 devices, older Android versions, cloud/non-seekable providers, production
+  signing, Android VIEW/SEND, print and native server sync remain unverified or unimplemented.
+  SAF in-place writes are provider-dependent and cannot promise atomic replacement.
+  Build/use instructions: [android.md](android.md).
 
 ## Windows native UI verification — 2026-11-08
 
@@ -95,14 +127,15 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | Docker Compose stack (linux/amd64) | `docker compose up -d --build` from a clean checkout state; health checks; setup token from log → admin → login → library → Cyrillic document → search; server restart keeps data; web app + SPA fallback + security headers served | ✅ manual smoke test |
 | Tauri desktop — Linux | Frontend builds; Rust shell `cargo clippy -D warnings` + `cargo test` (atomic write) in a Debian container with WebKitGTK 4.1 | ✅ compiles · ⏳ **never launched** (no display), file dialogs/associations unverified, no bundle built |
 | Tauri desktop — Windows | MSVC x64 release cross-build, actual Windows/WebView2 UI: import, editor/tasks, SQLite/FTS5, folders, history, restart, linked saves/conflicts | ✅ executable and local-storage UI verified · ⏳ installers/associations/signing not tested |
-| Android | — | ⏳ not started (SAF adapter not implemented) |
+| Android | ARM64/x86_64 debug APKs; Android 16 x86_64 WHPX emulator, SQLite and SAF UI checks | ✅ emulator/local files · ⏳ physical devices, cloud providers, production signing |
 | linux/arm64 image | — | ⏳ not built |
 
 ## Test counts
 
-- Vitest: 168 passing with the native bridge enabled — core 22, markdown-engine 54, i18n 7,
+- Vitest: 172 passing with the native bridge enabled — core 22, markdown-engine 54, i18n 7,
   storage 51 (Memory + IndexedDB + real Rust/SQLite, migration), platform 5, editor 5,
-  sync-client 14, ui 10. Without the native bridge: 150 passing and 3 migration tests skipped.
+  sync-client 14, ui 10, native platform 4. Without the native bridge: 154 passing and 3 migration tests skipped.
+- Android SAF policy: 4 Kotlin/JUnit tests (access grants, equal-size conflicts, bounds/names, export MIME).
 - Native local-store: 10 Rust tests (leases, durable storage/rollback, FTS5, migration marker,
   schema protection, linked-file saving).
 - Rust: domain 3, server unit 6, API integration 10, desktop shell 1.
@@ -115,7 +148,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | 2 Design system + localization | Done for the web app: themes, accent, reading prefs, responsive layout, full en/ru, runtime switching |
 | 3 Markdown reader | Done: GFM, footnotes, emoji, math, Mermaid (zoom/pan/export SVG), callouts, Shiki, TOC, reading progress, lightbox. Relative local images: placeholder only on web |
 | 4 Editor + tasks | Done: reader/source/split, exact-source checkbox edits, undo/redo across autosave, stale-edit rejection, conflict banner |
-| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Windows local-storage UI verified. Missing: Android SAF/device validation and Linux GUI validation |
+| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Windows and Android emulator local-storage/SAF UI verified. Missing: physical Android devices/cloud providers and Linux GUI validation |
 | 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, revisions, change feed, search, compose, web sign-in. Missing: folders/attachments endpoints, user/member management UI |
 | 7 Sync + offline | Web ↔ server done (one library ↔ one local folder): incremental pull, CAS push, idempotent retries, three-way merge, conflict UI, tombstones, revoked access, sign-out. Missing: desktop/Android sync (bearer token in secure storage), attachments, QR-assisted connection, offline PWA verification |
 | 8 Polish | Partial: Markdown/HTML export and print stylesheet. Missing: PDF beyond print dialog, axe audit, measured performance budgets, Playwright E2E |

@@ -34,13 +34,20 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 const toPicked = (f: NativePicked): PickedFile => ({ name: f.name, bytes: fromBase64(f.bytesBase64), locator: f.locator, fingerprint: f.fingerprint });
 
-/** Windows/Linux: real files, edited in place with atomic writes. Android SAF: not yet implemented. */
+/** Windows/Linux paths and Android SAF share the same byte-preserving command contract. */
 export class TauriPlatformAdapter implements PlatformAdapter {
-  readonly kind = 'desktop' as const;
-  readonly capabilities = { linkFiles: true, fileAssociations: true, print: true };
+  readonly capabilities;
+
+  constructor(readonly kind: 'desktop' | 'android' = 'desktop') {
+    this.capabilities = { linkFiles: true, fileAssociations: kind === 'desktop', print: kind === 'desktop' };
+  }
+
+  static async create(): Promise<TauriPlatformAdapter> {
+    return new TauriPlatformAdapter(await call<'desktop' | 'android'>('platform_kind'));
+  }
 
   async pickFiles(options: { link: boolean; multiple: boolean }): Promise<PickedFile[]> {
-    const files = (await call<NativePicked[]>('pick_markdown_files', { multiple: options.multiple })).map(toPicked);
+    const files = (await call<NativePicked[]>('pick_markdown_files', options)).map(toPicked);
     // Import mode keeps no reference to the original file.
     return options.link ? files : files.map((f) => ({ ...f, locator: null, fingerprint: null }));
   }

@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'file.permission_denied'
   | 'file.not_found'
   | 'file.unsupported'
+  | 'file.write_unsupported'
   | 'storage.quota_exceeded'
   | 'storage.failed'
   | 'storage.busy'
