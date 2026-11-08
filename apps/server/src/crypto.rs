@@ -1,4 +1,6 @@
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{
+    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -14,11 +16,17 @@ fn argon2() -> Argon2<'static> {
 
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
-    Ok(argon2().hash_password(password.as_bytes(), &salt)?.to_string())
+    Ok(argon2()
+        .hash_password(password.as_bytes(), &salt)?
+        .to_string())
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    PasswordHash::new(hash).is_ok_and(|parsed| argon2().verify_password(password.as_bytes(), &parsed).is_ok())
+    PasswordHash::new(hash).is_ok_and(|parsed| {
+        argon2()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
+    })
 }
 
 /// A hash to verify against when the user does not exist, so timing does not reveal usernames.
@@ -56,7 +64,10 @@ pub fn username_key(username: &str) -> String {
 
 pub fn valid_username(username: &str) -> bool {
     let len = username.chars().count();
-    (3..=64).contains(&len) && username.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    (3..=64).contains(&len)
+        && username
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Minimum policy: length. Passphrases are encouraged; composition rules are not enforced (NIST 800-63B).

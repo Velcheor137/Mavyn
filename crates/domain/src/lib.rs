@@ -86,7 +86,9 @@ mod tests {
 
     #[test]
     fn roles_are_ordered_by_privilege() {
-        assert!(Role::Viewer < Role::Editor && Role::Editor < Role::Admin && Role::Admin < Role::Owner);
+        assert!(
+            Role::Viewer < Role::Editor && Role::Editor < Role::Admin && Role::Admin < Role::Owner
+        );
     }
 
     #[test]

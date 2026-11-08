@@ -13,6 +13,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(db: PgPool, config: Config) -> Self {
-        Self { db, config: Arc::new(config), auth_limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(300))) }
+        Self {
+            db,
+            config: Arc::new(config),
+            auth_limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(300))),
+        }
     }
 }

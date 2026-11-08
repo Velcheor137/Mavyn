@@ -31,8 +31,12 @@ impl Config {
             bind_addr: var("BIND_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into()),
             public_origin: var("PUBLIC_ORIGIN").map(|o| o.trim_end_matches('/').to_owned()),
             web_dist: var("WEB_DIST"),
-            max_document_bytes: var("MAX_DOCUMENT_BYTES").and_then(|v| v.parse().ok()).unwrap_or(16 * 1024 * 1024),
-            session_ttl_days: var("SESSION_TTL_DAYS").and_then(|v| v.parse().ok()).unwrap_or(30),
+            max_document_bytes: var("MAX_DOCUMENT_BYTES")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16 * 1024 * 1024),
+            session_ttl_days: var("SESSION_TTL_DAYS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
             cookie_secure: flag("COOKIE_SECURE", true),
             trust_proxy: flag("TRUST_PROXY", false),
         })

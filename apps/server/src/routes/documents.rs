@@ -8,7 +8,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use mdr_domain::{codes, Role};
 use mdr_sync_protocol::{
-    ChangesResponse, ConflictDetails, CreateDocumentRequest, DocumentInfo, DocumentWithContent, RevisionInfo, SearchHit, UpdateContentRequest,
+    ChangesResponse, ConflictDetails, CreateDocumentRequest, DocumentInfo, DocumentWithContent,
+    RevisionInfo, SearchHit, UpdateContentRequest,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -64,62 +65,102 @@ pub fn derive_title(content: &str, file_name: &str) -> String {
             }
         }
     }
-    file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem).to_owned()
+    file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem)
+        .to_owned()
 }
 
 fn idempotency_key(headers: &HeaderMap) -> ApiResult<Option<Uuid>> {
     match headers.get("idempotency-key") {
         None => Ok(None),
-        Some(v) => v.to_str().ok().and_then(|s| Uuid::parse_str(s).ok()).map(Some).ok_or_else(|| ApiError::bad_request("Idempotency-Key")),
+        Some(v) => v
+            .to_str()
+            .ok()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .map(Some)
+            .ok_or_else(|| ApiError::bad_request("Idempotency-Key")),
     }
 }
 
 /// Replays the stored response for a retried operation.
-async fn replay(state: &AppState, user: &AuthUser, key: Option<Uuid>) -> ApiResult<Option<Response>> {
+async fn replay(
+    state: &AppState,
+    user: &AuthUser,
+    key: Option<Uuid>,
+) -> ApiResult<Option<Response>> {
     let Some(key) = key else { return Ok(None) };
-    let row: Option<(i16, Value)> = sqlx::query_as("SELECT status, response FROM applied_ops WHERE user_id = $1 AND op_id = $2")
-        .bind(user.user_id)
-        .bind(key)
-        .fetch_optional(&state.db)
-        .await?;
-    Ok(row.map(|(status, body)| (StatusCode::from_u16(status as u16).unwrap_or(StatusCode::OK), Json(body)).into_response()))
+    let row: Option<(i16, Value)> = sqlx::query_as(
+        "SELECT status, response FROM applied_ops WHERE user_id = $1 AND op_id = $2",
+    )
+    .bind(user.user_id)
+    .bind(key)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(row.map(|(status, body)| {
+        (
+            StatusCode::from_u16(status as u16).unwrap_or(StatusCode::OK),
+            Json(body),
+        )
+            .into_response()
+    }))
 }
 
-async fn record_op(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, user: &AuthUser, key: Option<Uuid>, status: StatusCode, body: &Value) -> ApiResult<()> {
+async fn record_op(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user: &AuthUser,
+    key: Option<Uuid>,
+    status: StatusCode,
+    body: &Value,
+) -> ApiResult<()> {
     if let Some(key) = key {
-        sqlx::query("INSERT INTO applied_ops (op_id, user_id, status, response) VALUES ($1, $2, $3, $4)")
-            .bind(key)
-            .bind(user.user_id)
-            .bind(status.as_u16() as i16)
-            .bind(body)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO applied_ops (op_id, user_id, status, response) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(key)
+        .bind(user.user_id)
+        .bind(status.as_u16() as i16)
+        .bind(body)
+        .execute(&mut **tx)
+        .await?;
     }
     Ok(())
 }
 
 fn check_size(state: &AppState, content: &str) -> ApiResult<()> {
     if content.len() > state.config.max_document_bytes {
-        return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, codes::TOO_LARGE).with_details(json!({ "max_bytes": state.config.max_document_bytes })));
+        return Err(
+            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, codes::TOO_LARGE)
+                .with_details(json!({ "max_bytes": state.config.max_document_bytes })),
+        );
     }
     Ok(())
 }
 
-async fn store_blob(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, content: &str) -> ApiResult<String> {
+async fn store_blob(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    content: &str,
+) -> ApiResult<String> {
     let hash = crypto::sha256_hex(content.as_bytes());
-    sqlx::query("INSERT INTO blobs (hash, size, content) VALUES ($1, $2, $3) ON CONFLICT (hash) DO NOTHING")
-        .bind(&hash)
-        .bind(content.len() as i64)
-        .bind(content)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO blobs (hash, size, content) VALUES ($1, $2, $3) ON CONFLICT (hash) DO NOTHING",
+    )
+    .bind(&hash)
+    .bind(content.len() as i64)
+    .bind(content)
+    .execute(&mut **tx)
+    .await?;
     Ok(hash)
 }
 
 /// Search vector over title + content; `ё` folded to `е` like the clients do.
 const SEARCH_VECTOR: &str = "to_tsvector('simple', translate($T || ' ' || $C, 'Ёё', 'Ее'))";
 
-pub async fn list(State(state): State<AppState>, user: AuthUser, Path(library_id): Path<Uuid>) -> ApiResult<Json<Vec<DocumentInfo>>> {
+pub async fn list(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(library_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<DocumentInfo>>> {
     require_role(&state.db, &user, library_id, Role::Viewer).await?;
     let rows: Vec<DocRow> = sqlx::query_as(&format!("SELECT {DOC_COLUMNS} FROM documents WHERE library_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC"))
         .bind(library_id)
@@ -182,16 +223,37 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
-pub async fn get(State(state): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<Json<DocumentWithContent>> {
+pub async fn get(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<DocumentWithContent>> {
     require_document_role(&state.db, &user, id, Role::Viewer).await?;
-    let row: DocRow = sqlx::query_as(&format!("SELECT {DOC_COLUMNS} FROM documents WHERE id = $1")).bind(id).fetch_one(&state.db).await?;
-    let content: String = sqlx::query_scalar("SELECT content FROM blobs WHERE hash = $1").bind(&row.content_hash).fetch_one(&state.db).await?;
-    Ok(Json(DocumentWithContent { document: row.into(), content }))
+    let row: DocRow = sqlx::query_as(&format!(
+        "SELECT {DOC_COLUMNS} FROM documents WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    let content: String = sqlx::query_scalar("SELECT content FROM blobs WHERE hash = $1")
+        .bind(&row.content_hash)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(DocumentWithContent {
+        document: row.into(),
+        content,
+    }))
 }
 
 /// Compare-and-swap update: succeeds only when `base_revision_id` is the head. Otherwise 409 with
 /// the current head so the client can three-way merge or keep both versions.
-pub async fn update_content(State(state): State<AppState>, user: AuthUser, Path(id): Path<Uuid>, headers: HeaderMap, Json(body): Json<UpdateContentRequest>) -> ApiResult<Response> {
+pub async fn update_content(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(body): Json<UpdateContentRequest>,
+) -> ApiResult<Response> {
     require_document_role(&state.db, &user, id, Role::Editor).await?;
     let key = idempotency_key(&headers)?;
     if let Some(response) = replay(&state, &user, key).await? {
@@ -203,18 +265,27 @@ pub async fn update_content(State(state): State<AppState>, user: AuthUser, Path(
     }
 
     let mut tx = state.db.begin().await?;
-    let (head, file_name, deleted): (Uuid, String, Option<OffsetDateTime>) =
-        sqlx::query_as("SELECT head_revision_id, file_name, deleted_at FROM documents WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let (head, file_name, deleted): (Uuid, String, Option<OffsetDateTime>) = sqlx::query_as(
+        "SELECT head_revision_id, file_name, deleted_at FROM documents WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
     if deleted.is_some() {
         return Err(ApiError::not_found(codes::DOCUMENT_NOT_FOUND));
     }
     if head != body.base_revision_id {
-        let current_hash: String = sqlx::query_scalar("SELECT content_hash FROM documents WHERE id = $1").bind(id).fetch_one(&mut *tx).await?;
-        let details = ConflictDetails { head_revision_id: head, content_hash: current_hash };
-        return Err(ApiError::new(StatusCode::CONFLICT, codes::CONFLICT).with_details(serde_json::to_value(details).unwrap_or_default()));
+        let current_hash: String =
+            sqlx::query_scalar("SELECT content_hash FROM documents WHERE id = $1")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let details = ConflictDetails {
+            head_revision_id: head,
+            content_hash: current_hash,
+        };
+        return Err(ApiError::new(StatusCode::CONFLICT, codes::CONFLICT)
+            .with_details(serde_json::to_value(details).unwrap_or_default()));
     }
 
     let hash = store_blob(&mut tx, &body.content).await?;
@@ -233,7 +304,14 @@ pub async fn update_content(State(state): State<AppState>, user: AuthUser, Path(
          change_seq = nextval('change_seq'), search = {} WHERE id = $1 RETURNING {DOC_COLUMNS}",
         SEARCH_VECTOR.replace("$T", "$4").replace("$C", "$5")
     );
-    let row: DocRow = sqlx::query_as(&sql).bind(id).bind(revision_id).bind(&hash).bind(&title).bind(&body.content).fetch_one(&mut *tx).await?;
+    let row: DocRow = sqlx::query_as(&sql)
+        .bind(id)
+        .bind(revision_id)
+        .bind(&hash)
+        .bind(&title)
+        .bind(&body.content)
+        .fetch_one(&mut *tx)
+        .await?;
     let info: DocumentInfo = row.into();
     let response = serde_json::to_value(&info).map_err(|_| ApiError::internal())?;
     record_op(&mut tx, &user, key, StatusCode::OK, &response).await?;
@@ -242,7 +320,11 @@ pub async fn update_content(State(state): State<AppState>, user: AuthUser, Path(
 }
 
 /// Soft delete: leaves a tombstone in the change feed so other devices remove their copies.
-pub async fn delete(State(state): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+pub async fn delete(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
     require_document_role(&state.db, &user, id, Role::Editor).await?;
     sqlx::query("UPDATE documents SET deleted_at = now(), updated_at = now(), change_seq = nextval('change_seq') WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
@@ -251,7 +333,11 @@ pub async fn delete(State(state): State<AppState>, user: AuthUser, Path(id): Pat
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn revisions(State(state): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<Json<Vec<RevisionInfo>>> {
+pub async fn revisions(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<RevisionInfo>>> {
     require_document_role(&state.db, &user, id, Role::Viewer).await?;
     let rows: Vec<RevisionRow> = sqlx::query_as(
         "SELECT r.id, r.parent_revision_id, r.content_hash, u.username AS author, r.reason, r.created_at
@@ -262,7 +348,14 @@ pub async fn revisions(State(state): State<AppState>, user: AuthUser, Path(id): 
     .await?;
     Ok(Json(
         rows.into_iter()
-            .map(|r| RevisionInfo { id: r.id, parent_revision_id: r.parent_revision_id, content_hash: r.content_hash, author: r.author, reason: r.reason, created_at: r.created_at })
+            .map(|r| RevisionInfo {
+                id: r.id,
+                parent_revision_id: r.parent_revision_id,
+                content_hash: r.content_hash,
+                author: r.author,
+                reason: r.reason,
+                created_at: r.created_at,
+            })
             .collect(),
     ))
 }
@@ -284,7 +377,12 @@ pub struct ChangesQuery {
 }
 
 /// Cursor-based change feed (upserts and tombstones) for incremental sync.
-pub async fn changes(State(state): State<AppState>, user: AuthUser, Path(library_id): Path<Uuid>, Query(q): Query<ChangesQuery>) -> ApiResult<Json<ChangesResponse>> {
+pub async fn changes(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(library_id): Path<Uuid>,
+    Query(q): Query<ChangesQuery>,
+) -> ApiResult<Json<ChangesResponse>> {
     require_role(&state.db, &user, library_id, Role::Viewer).await?;
     let after: i64 = match q.cursor.as_deref() {
         None | Some("") => 0,
@@ -302,7 +400,11 @@ pub async fn changes(State(state): State<AppState>, user: AuthUser, Path(library
     let has_more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
     let cursor = rows.last().map_or(after, |r| r.change_seq).to_string();
-    Ok(Json(ChangesResponse { documents: rows.into_iter().map(Into::into).collect(), cursor, has_more }))
+    Ok(Json(ChangesResponse {
+        documents: rows.into_iter().map(Into::into).collect(),
+        cursor,
+        has_more,
+    }))
 }
 
 #[derive(sqlx::FromRow)]
@@ -325,15 +427,19 @@ pub struct SearchQuery {
 
 /// Prefix full-text search. Only letters/digits reach `to_tsquery`, so user input cannot inject
 /// tsquery operators.
-pub async fn search(State(state): State<AppState>, user: AuthUser, Path(library_id): Path<Uuid>, Query(q): Query<SearchQuery>) -> ApiResult<Json<Vec<SearchHit>>> {
+pub async fn search(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(library_id): Path<Uuid>,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<Json<Vec<SearchHit>>> {
     require_role(&state.db, &user, library_id, Role::Viewer).await?;
-    let terms: Vec<String> = q
-        .q
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .take(8)
-        .map(|t| format!("{}:*", t.to_lowercase().replace('ё', "е")))
-        .collect();
+    let terms: Vec<String> =
+        q.q.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .take(8)
+            .map(|t| format!("{}:*", t.to_lowercase().replace('ё', "е")))
+            .collect();
     if terms.is_empty() {
         return Ok(Json(Vec::new()));
     }
@@ -350,7 +456,16 @@ pub async fn search(State(state): State<AppState>, user: AuthUser, Path(library_
     .bind(&query)
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(rows.into_iter().map(|(document_id, title, snippet, rank)| SearchHit { document_id, title, snippet, rank }).collect()))
+    Ok(Json(
+        rows.into_iter()
+            .map(|(document_id, title, snippet, rank)| SearchHit {
+                document_id,
+                title,
+                snippet,
+                rank,
+            })
+            .collect(),
+    ))
 }
 
 #[cfg(test)]

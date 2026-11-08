@@ -17,7 +17,11 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str) -> Self {
-        Self { status, code, details: Value::Null }
+        Self {
+            status,
+            code,
+            details: Value::Null,
+        }
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
@@ -26,7 +30,8 @@ impl ApiError {
     }
 
     pub fn bad_request(field: &str) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, codes::BAD_REQUEST).with_details(json!({ "field": field }))
+        Self::new(StatusCode::BAD_REQUEST, codes::BAD_REQUEST)
+            .with_details(json!({ "field": field }))
     }
     pub fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, codes::AUTH_REQUIRED)
@@ -44,7 +49,12 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = ErrorBody { error: ErrorPayload { code: self.code.to_owned(), details: self.details } };
+        let body = ErrorBody {
+            error: ErrorPayload {
+                code: self.code.to_owned(),
+                details: self.details,
+            },
+        };
         (self.status, Json(body)).into_response()
     }
 }

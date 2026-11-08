@@ -44,7 +44,11 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
 }
 
 impl<S> FromRequestParts<S> for AuthUser
@@ -77,28 +81,48 @@ where
 
         let unsafe_method = !matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS);
         if via_cookie && unsafe_method {
-            if let (Some(expected), Some(origin)) = (&state.config.public_origin, parts.headers.get(header::ORIGIN)) {
+            if let (Some(expected), Some(origin)) = (
+                &state.config.public_origin,
+                parts.headers.get(header::ORIGIN),
+            ) {
                 if origin.to_str().ok() != Some(expected.as_str()) {
                     return Err(ApiError::new(StatusCode::FORBIDDEN, codes::CSRF));
                 }
             }
-            let sent = parts.headers.get("x-csrf-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+            let sent = parts
+                .headers
+                .get("x-csrf-token")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
             if !crypto::constant_time_eq(sent.as_bytes(), row.csrf_token.as_bytes()) {
                 return Err(ApiError::new(StatusCode::FORBIDDEN, codes::CSRF));
             }
         }
 
-        Ok(AuthUser { user_id: row.user_id, session_id: row.session_id, username: row.username, is_admin: row.is_admin, csrf_token: row.csrf_token })
+        Ok(AuthUser {
+            user_id: row.user_id,
+            session_id: row.session_id,
+            username: row.username,
+            is_admin: row.is_admin,
+            csrf_token: row.csrf_token,
+        })
     }
 }
 
 /// Role of `user` in `library`. Non-members get `library.not_found` so library IDs cannot be probed.
-pub async fn require_role(db: &PgPool, user: &AuthUser, library_id: Uuid, min: Role) -> ApiResult<Role> {
-    let role: Option<String> = sqlx::query_scalar("SELECT role FROM library_members WHERE library_id = $1 AND user_id = $2")
-        .bind(library_id)
-        .bind(user.user_id)
-        .fetch_optional(db)
-        .await?;
+pub async fn require_role(
+    db: &PgPool,
+    user: &AuthUser,
+    library_id: Uuid,
+    min: Role,
+) -> ApiResult<Role> {
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM library_members WHERE library_id = $1 AND user_id = $2",
+    )
+    .bind(library_id)
+    .bind(user.user_id)
+    .fetch_optional(db)
+    .await?;
     let role = role
         .and_then(|r| r.parse::<Role>().ok())
         .ok_or_else(|| ApiError::not_found(codes::LIBRARY_NOT_FOUND))?;
@@ -110,15 +134,23 @@ pub async fn require_role(db: &PgPool, user: &AuthUser, library_id: Uuid, min: R
 
 /// Resolves a document's library and checks the role there. Documents in libraries the user cannot
 /// see are reported as not found (IDOR protection).
-pub async fn require_document_role(db: &PgPool, user: &AuthUser, document_id: Uuid, min: Role) -> ApiResult<(Uuid, Role)> {
-    let library_id: Option<Uuid> = sqlx::query_scalar("SELECT library_id FROM documents WHERE id = $1")
-        .bind(document_id)
-        .fetch_optional(db)
-        .await?;
+pub async fn require_document_role(
+    db: &PgPool,
+    user: &AuthUser,
+    document_id: Uuid,
+    min: Role,
+) -> ApiResult<(Uuid, Role)> {
+    let library_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT library_id FROM documents WHERE id = $1")
+            .bind(document_id)
+            .fetch_optional(db)
+            .await?;
     let library_id = library_id.ok_or_else(|| ApiError::not_found(codes::DOCUMENT_NOT_FOUND))?;
     match require_role(db, user, library_id, min).await {
         Ok(role) => Ok((library_id, role)),
-        Err(e) if e.code == codes::LIBRARY_NOT_FOUND => Err(ApiError::not_found(codes::DOCUMENT_NOT_FOUND)),
+        Err(e) if e.code == codes::LIBRARY_NOT_FOUND => {
+            Err(ApiError::not_found(codes::DOCUMENT_NOT_FOUND))
+        }
         Err(e) => Err(e),
     }
 }
@@ -132,13 +164,20 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(max: u32, window: Duration) -> Self {
-        Self { window, max, hits: Mutex::new(HashMap::new()) }
+        Self {
+            window,
+            max,
+            hits: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Records an attempt; returns false when the key exceeded its budget.
     pub fn check(&self, key: &str) -> bool {
         let now = Instant::now();
-        let mut hits = self.hits.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut hits = self
+            .hits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if hits.len() > 10_000 {
             hits.retain(|_, (start, _)| now.duration_since(*start) < self.window);
         }
@@ -151,9 +190,17 @@ impl RateLimiter {
     }
 }
 
-pub fn client_ip(parts_headers: &HeaderMap, connect: Option<&ConnectInfo<SocketAddr>>, trust_proxy: bool) -> String {
+pub fn client_ip(
+    parts_headers: &HeaderMap,
+    connect: Option<&ConnectInfo<SocketAddr>>,
+    trust_proxy: bool,
+) -> String {
     if trust_proxy {
-        if let Some(ip) = parts_headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()) {
+        if let Some(ip) = parts_headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+        {
             return ip.trim().to_owned();
         }
     }
@@ -176,7 +223,10 @@ mod tests {
     #[test]
     fn parses_cookies() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::COOKIE, "a=1; __Host-mdr_session=tok; b=2".parse().expect("header"));
+        headers.insert(
+            header::COOKIE,
+            "a=1; __Host-mdr_session=tok; b=2".parse().expect("header"),
+        );
         assert_eq!(cookie_value(&headers, "__Host-mdr_session"), Some("tok"));
         assert_eq!(cookie_value(&headers, "missing"), None);
     }

@@ -9,7 +9,10 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,tower_http=info,sqlx=warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info,sqlx=warn")),
+        )
         .init();
 
     let config = Config::from_env()?;
@@ -29,9 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = config.bind_addr.clone();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "listening");
-    axum::serve(listener, app(AppState::new(db, config)).into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    axum::serve(
+        listener,
+        app(AppState::new(db, config)).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await?;
     Ok(())
 }
 
@@ -41,7 +47,8 @@ async fn shutdown() {
     };
     #[cfg(unix)]
     let term = async {
-        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             s.recv().await;
         }
     };
