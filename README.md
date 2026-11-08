@@ -1,59 +1,317 @@
 # Mavyn
 
-Local-first Markdown reader, editor and library with an optional self-hosted sync server.
-English and Russian interface.
+Mavyn — приложение для чтения и редактирования Markdown с локальной библиотекой и необязательной синхронизацией через собственный сервер. Документы доступны без сети. Интерфейс поддерживает русский и английский языки.
 
-> **Status:** early development. See [docs/status.md](docs/status.md) for exactly what works and
-> what has been verified on which platform. Nothing here is released yet.
+**Текущий релиз: [v0.1.1](https://github.com/Velcheor137/Mavyn/releases/tag/v0.1.1).** Проект находится на раннем этапе развития. Реализованные функции и результаты проверок на устройствах описаны в [статусе проекта](docs/status.md).
 
-## What works today
+## Содержание
 
-- Web app / PWA: library in IndexedDB, reader, CodeMirror editor, split view, autosave, undo/redo
-  that survives autosave, version history with diff and restore.
-- Clicking a task checkbox in reading mode changes exactly that `[ ]` in the source (no text
-  matching), keeps CRLF/LF and all other bytes intact, and refuses stale edits.
-- GFM, footnotes, emoji, math (KaTeX), Mermaid, callouts, Shiki highlighting, sanitized raw HTML.
-- Search across documents (Russian and English, case/`ё` folding, prefix matching).
-- Native SQLite library with transactional FTS5 indexing and non-destructive legacy migration;
-  the shared storage engine is tested under Linux/WSL. Native application launch remains unverified.
-- Explicit history cleanup with configurable retention; keep-all is the default.
-- Light/dark/system theme, accent color, reading preferences; instant en ↔ ru switching.
-- API server (Rust/Axum/PostgreSQL): setup-token bootstrap, login sessions, libraries with
-  roles, documents with compare-and-swap revisions, idempotent writes, change feed, search.
-- Sync between the web app and the server it is served from: offline-first, automatic merging of
-  non-overlapping edits, conflict resolution UI (keep mine / use server / keep both).
+- [Возможности](#возможности)
+- [Установка](#установка)
+- [Первые шаги](#первые-шаги)
+- [Запуск сервера через Docker](#запуск-сервера-через-docker)
+- [Доступ через интернет и HTTPS](#доступ-через-интернет-и-https)
+- [Подключение к серверу](#подключение-к-серверу)
+- [Обслуживание и резервные копии](#обслуживание-и-резервные-копии)
+- [Решение проблем](#решение-проблем)
+- [Запуск из исходного кода](#запуск-из-исходного-кода)
+- [Документация](#документация)
 
-Not yet: desktop/Android sync and builds verified on real systems, Android SAF, attachments,
-PDF export beyond the browser's print dialog. See the status page.
+## Возможности
 
-## Quick start (development)
+- Чтение, редактирование исходного текста и режим с редактором и предпросмотром рядом.
+- Автосохранение, отмена и повтор действий, история версий с просмотром отличий и восстановлением.
+- Вложенные папки, переименование и перемещение документов и папок, теги, избранное, недавние документы и корзина.
+- Поиск по библиотеке на русском и английском, включая варианты `е`/`ё` и поиск по началу слов.
+- Таблицы, задачи, сноски, эмодзи, формулы KaTeX, диаграммы Mermaid, выноски и подсветка кода. Активное содержимое HTML очищается перед отображением.
+- Отметка задачи в режиме чтения изменяет соответствующий флажок в исходнике, сохраняя остальной текст и окончания строк.
+- Импорт собственной копии файла или работа со связанным исходным файлом. Перед сохранением проверяется, не изменён ли файл другой программой.
+- Экспорт Markdown и HTML; печать и сохранение в PDF через диалог браузера на поддерживаемых платформах.
+- SQLite с полнотекстовым поиском FTS5 в установленных приложениях; IndexedDB в веб-версии.
+- Светлая, тёмная и системная темы, настройка оформления и чтения.
+- Собственный сервер: учётные записи, библиотеки с правами доступа, синхронизация и разрешение конфликтов.
 
-Requires Node.js 22.22.2+, 24.15.0+, or 26+ (matching the locked test dependencies).
+Синхронизация доступна в веб-версии, Windows и Android. В приложении Linux пока доступна локальная библиотека без подключения к серверу. Структура вложенных папок целиком между устройствами пока не переносится. Вложения и отдельный механизм экспорта PDF ещё не реализованы.
+
+## Установка
+
+Готовые пакеты находятся в разделе [Releases](https://github.com/Velcheor137/Mavyn/releases). Для обычного использования устанавливать Node.js, Rust или Docker не нужно.
+
+| Платформа | Пакет v0.1.1 | Установка |
+|---|---|---|
+| Android 7.0 и новее, ARM64 | [Скачать APK](https://github.com/Velcheor137/Mavyn/releases/download/v0.1.1/Mavyn-0.1.1-android-arm64.apk) | Откройте файл на телефоне и разрешите установку из выбранного источника, если Android попросит. |
+| Windows x64 | [Скачать EXE](https://github.com/Velcheor137/Mavyn/releases/download/v0.1.1/Mavyn-0.1.1-windows-x64.exe) | Запустите установщик и следуйте его шагам. |
+| Linux x86_64, Debian / Ubuntu | [Скачать DEB](https://github.com/Velcheor137/Mavyn/releases/download/v0.1.1/Mavyn-0.1.1-linux-x86_64.deb) | Установите пакет командой ниже. |
+| Linux x86_64, Fedora / совместимые системы | [Скачать RPM](https://github.com/Velcheor137/Mavyn/releases/download/v0.1.1/Mavyn-0.1.1-linux-x86_64.rpm) | Установите пакет командой ниже. |
+| Веб / PWA | Адрес вашего сервера | Откройте в браузере; при наличии кнопки «Установить приложение» можно добавить отдельное окно. |
+
+Debian / Ubuntu, из папки с загруженным пакетом:
 
 ```bash
-npm install
-npm run dev:web        # http://localhost:5173
-npm test               # unit + integration tests (Vitest)
-npm run typecheck
+sudo apt install ./Mavyn-0.1.1-linux-x86_64.deb
 ```
 
-Server tests need Docker (they run Rust and PostgreSQL in containers): see
-[docs/testing.md](docs/testing.md).
-
-## Self-hosting
+Fedora:
 
 ```bash
-cp infrastructure/docker/.env.example infrastructure/docker/.env   # set POSTGRES_PASSWORD
-docker compose -f infrastructure/docker/compose.yaml up -d --build
-docker compose -f infrastructure/docker/compose.yaml logs server | grep "setup token"
+sudo dnf install ./Mavyn-0.1.1-linux-x86_64.rpm
 ```
 
-Details, HTTPS reverse proxy and backups: [docs/deployment.md](docs/deployment.md).
+Контрольные суммы опубликованы в [SHA256SUMS.txt](https://github.com/Velcheor137/Mavyn/releases/download/v0.1.1/SHA256SUMS.txt). В Windows сумму можно получить командой `Get-FileHash .\имя-файла -Algorithm SHA256`, в Linux — `sha256sum имя-файла`.
 
-## Documentation
+Windows может показать предупреждение о неизвестном издателе: установщик пока не имеет сертификата подписи Windows. Android-пакет подписан ключом релизов; сборку для разработки с другой подписью нельзя обновить поверх него без подготовки. Перед заменой такой сборки экспортируйте документы.
 
-| Audience | Documents |
+Запуск Windows и работа Android в эмуляторе проверены. Проверки на физических ARM64-телефонах и запуск интерфейса Linux ещё остаются в плане; успешная сборка пакета не означает проверку на всех устройствах.
+
+## Первые шаги
+
+1. Откройте приложение. При необходимости выберите русский язык в настройках.
+2. Создайте документ или выберите **Открыть файл**. При импорте можно сохранить отдельную копию в библиотеке либо связать документ с исходным файлом, если платформа поддерживает такой доступ. На Android используется системный выбор файлов.
+3. Переключайтесь между режимами **Чтение**, **Исходник** и **Разделить**. Изменения сохраняются автоматически; `Ctrl+S` запускает сохранение сразу.
+4. Через меню папок и документов создавайте подпапки, переименовывайте и перемещайте записи.
+5. Откройте **Историю версий**, чтобы сравнить изменения или восстановить прежний текст. По умолчанию история сохраняется полностью; очистка запускается отдельно с подтверждением.
+
+Сервер для этих действий не требуется. Чтобы перенести отдельный документ, используйте экспорт Markdown. Для обмена изменениями между устройствами настройте сервер по инструкции ниже.
+
+В веб-версии данные принадлежат конкретному браузеру и адресу сайта: очистка данных сайта удаляет локальную библиотеку. В установленных приложениях библиотека хранится в каталоге данных приложения. Делайте резервные копии важных документов; синхронизация сама по себе не заменяет резервное копирование.
+
+## Запуск сервера через Docker
+
+Docker Compose запускает два контейнера: `server` с API и готовым веб-приложением и `db` с PostgreSQL. База хранится в постоянном томе `db-data`. Устанавливать PostgreSQL, Node.js или Rust на сам компьютер для этого способа не нужно.
+
+### 1. Подготовьте Docker и исходный код
+
+Нужны Git, работающий Docker Engine и Docker Compose v2. На Windows можно использовать Docker Desktop с Linux-контейнерами и WSL2. Перед выполнением команд запустите Docker.
+
+```bash
+docker --version
+docker compose version
+git clone https://github.com/Velcheor137/Mavyn.git
+cd Mavyn
+```
+
+Если проект уже скачан, перейдите в его корневую папку. Все команды далее выполняются из неё, если явно не указано другое.
+
+### 2. Создайте настройки
+
+В PowerShell:
+
+```powershell
+Copy-Item infrastructure/docker/.env.example infrastructure/docker/.env
+notepad infrastructure/docker/.env
+```
+
+В Linux / Bash:
+
+```bash
+cp infrastructure/docker/.env.example infrastructure/docker/.env
+nano infrastructure/docker/.env
+```
+
+Для первого запуска **только на этом компьютере по HTTP** укажите:
+
+```dotenv
+POSTGRES_PASSWORD=ЗАМЕНИТЕ_НА_СЛУЧАЙНЫЙ_ПАРОЛЬ
+PUBLIC_ORIGIN=http://localhost:8080
+COOKIE_SECURE=false
+TRUST_PROXY=false
+BIND_HOST=127.0.0.1
+HTTP_PORT=8080
+MAX_DOCUMENT_BYTES=16777216
+SESSION_TTL_DAYS=30
+RUST_LOG=info
+```
+
+Замените `POSTGRES_PASSWORD` перед запуском. Используйте длинную случайную строку из латинских букв и цифр, например 64 шестнадцатеричных символа. В Bash её можно получить через `openssl rand -hex 32`. Пароль включается в адрес подключения к базе, поэтому не используйте символы `@`, `:`, `/`, `#` и другие специальные символы URL без соответствующего кодирования. Не публикуйте файл `.env`.
+
+`COOKIE_SECURE=false` предназначено для локального HTTP. Для публичного HTTPS-сервера значение должно быть `true`.
+
+### 3. Соберите и запустите контейнеры
+
+Эти команды одинаковы для PowerShell и Bash:
+
+```bash
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml config --quiet
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml up -d --build
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml ps
+```
+
+Первая сборка скачивает зависимости и собирает веб-приложение и Rust-сервер, поэтому занимает больше времени, чем последующие запуски. Этапу сборки веб-приложения требуется около 2,5 ГБ оперативной памяти; оставьте дополнительную память для Docker и компиляции сервера.
+
+Откройте **[http://localhost:8080](http://localhost:8080)**. Адрес проверки API: [http://localhost:8080/api/v1/health](http://localhost:8080/api/v1/health); исправный сервер возвращает JSON со значением `status: "ok"`.
+
+### 4. Создайте администратора
+
+При первом открытии новый сервер предлагает первоначальную настройку. Получите одноразовый токен из журнала.
+
+PowerShell:
+
+```powershell
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml logs server | Select-String "setup token"
+```
+
+Bash:
+
+```bash
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml logs server | grep "setup token"
+```
+
+Вставьте токен в форму **Настройка сервера**, задайте имя администратора и пароль не короче 10 символов. Если форму закрыли, откройте **Настройки → Сервер**. Затем выберите или создайте серверную библиотеку для синхронизации.
+
+Токен действует один раз и меняется при перезапуске до завершения настройки. Если в журнале несколько токенов, используйте последний. Готовых логина и пароля по умолчанию нет. Дополнительные учётные записи создаёт администратор через API; открытая регистрация отсутствует.
+
+## Доступ через интернет и HTTPS
+
+Для телефона или другого компьютера настройте домен и HTTPS. Локальная настройка выше слушает только `127.0.0.1`; адрес `localhost` на телефоне означает сам телефон.
+
+Для сервера с обратным прокси на том же хосте измените `.env`:
+
+```dotenv
+PUBLIC_ORIGIN=https://notes.example.com
+COOKIE_SECURE=true
+TRUST_PROXY=true
+BIND_HOST=127.0.0.1
+HTTP_PORT=8080
+```
+
+Замените `notes.example.com` своим доменом, направьте его DNS на сервер и настройте HTTPS-прокси. Например, для установленного **на хосте** Caddy:
+
+```caddyfile
+notes.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Для выдачи сертификата домен должен быть доступен снаружи; обычно нужны открытые порты 80 и 443. Если прокси находится в другом контейнере, `127.0.0.1` внутри него указывает на сам прокси: настройте общую Docker-сеть и обращение к сервису `server:8080`.
+
+Примените настройки:
+
+```bash
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml up -d --build
+```
+
+Включайте `TRUST_PROXY` только за своим доверенным прокси. Порт PostgreSQL наружу не публикуется. `PUBLIC_ORIGIN` должен совпадать с адресом, который пользователи открывают в браузере, включая схему и нестандартный порт.
+
+## Подключение к серверу
+
+- **Веб:** откройте адрес своего сервера. Веб-приложение использует API на этом же адресе. Войдите через **Настройки → Сервер**, затем выберите или создайте библиотеку.
+- **Windows и Android:** в **Настройки → Сервер** укажите адрес вида `https://notes.example.com`, войдите и выберите библиотеку. Указывайте только адрес сервера, без `/api/v1`, пути, параметров и данных учётной записи в URL.
+- **Linux:** пока используйте веб-версию для синхронизации; установленное приложение работает с локальными документами.
+
+Установленные приложения требуют HTTPS; обычный HTTP разрешён только для разработки через локальный адрес того же устройства. Для подключения телефона к серверу на компьютере используйте доступный телефону HTTPS-адрес.
+
+Без сети редактирование продолжается локально. После восстановления соединения ожидающие изменения отправляются на сервер. Независимые правки могут объединяться автоматически; при конфликте приложение предложит оставить свою версию, принять серверную или сохранить обе. Структура локальных папок целиком не синхронизируется; вложенные папки автоматически не подключаются к серверной библиотеке.
+
+## Обслуживание и резервные копии
+
+### Журналы, остановка и повторный запуск
+
+```bash
+# Следить за журналом; Ctrl+C завершает просмотр, сервер продолжает работать.
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml logs -f server
+
+# Остановить контейнеры, сохранив их и данные.
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml stop
+
+# Запустить снова.
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml up -d
+
+# Удалить контейнеры и сеть, сохранив том базы данных.
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml down
+```
+
+Не добавляйте `-v` к `down`, если хотите сохранить данные: этот параметр удаляет том базы. Изменение `POSTGRES_PASSWORD` в `.env` не меняет пароль уже созданной базы; для этого требуется отдельная смена пароля в PostgreSQL.
+
+### Резервная копия серверной базы
+
+Документы, история и учётные записи сервера находятся в PostgreSQL. Команды ниже создают копию без перенаправления двоичного вывода оболочкой и подходят для PowerShell и Bash:
+
+```bash
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml exec -T db pg_dump -U mdreader -d mdreader -Fc -f /tmp/mavyn-backup.dump
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml cp db:/tmp/mavyn-backup.dump ./mavyn-backup.dump
+```
+
+Перенесите файл в безопасное место с датой в имени. При повторном выполнении файл с тем же именем заменяется. Отдельно сохраните `.env` в защищённом месте.
+
+**Восстановление заменяет содержимое серверной базы выбранной копией.** Остановите сервер на время операции; пользователи не должны вносить изменения. Из корня проекта, где лежит `mavyn-backup.dump`:
+
+```bash
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml stop server
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml up -d db
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml cp ./mavyn-backup.dump db:/tmp/mavyn-backup.dump
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml exec -T db pg_restore --exit-on-error --clean --if-exists --no-owner --no-acl -U mdreader -d mdreader /tmp/mavyn-backup.dump
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml up -d server
+```
+
+Запускайте последнюю команду только после успешного восстановления. При ошибке изучите вывод и оставьте сервер остановленным до её устранения. Периодически проверяйте восстановление на отдельной базе.
+
+### Обновление
+
+Сначала сделайте резервную копию, затем выполните:
+
+```bash
+git pull --ff-only
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml up -d --build
+docker compose --env-file infrastructure/docker/.env -f infrastructure/docker/compose.yaml ps
+```
+
+Миграции базы выполняются автоматически при запуске сервера. Не удаляйте том базы для обновления.
+
+### Локальная библиотека приложений
+
+Серверная копия не содержит документы, которые никогда не синхронизировались. Экспортируйте их отдельно. Для полной копии установленного приложения закройте все его окна и процессы и скопируйте каталог данных целиком, включая `library.sqlite3` и оставшиеся файлы `-wal`/`-shm`. Не копируйте только основной файл SQLite во время работы приложения.
+
+## Решение проблем
+
+| Проблема | Что проверить |
 |---|---|
-| Users | [English guide](docs/user/en.md) · [Руководство на русском](docs/user/ru.md) |
-| Operators | [Deployment](docs/deployment.md) · [Security](docs/security.md) |
-| Developers | [AGENTS.md](AGENTS.md) · [Architecture](docs/architecture.md) · [Plan](docs/plan.md) · [API](docs/api.md) · [Testing](docs/testing.md) · [Contributing](docs/contributing.md) |
+| Docker не отвечает | Запущен ли Docker Desktop / Docker Engine, выбран ли режим Linux-контейнеров. |
+| Ошибка `set POSTGRES_PASSWORD in .env` | Создан ли файл настроек, заполнен ли пароль и указан ли `--env-file` из примеров. |
+| Порт 8080 занят | Измените `HTTP_PORT`, например на `8081`, и одновременно обновите `PUBLIC_ORIGIN`. Повторите `up -d --build` и откройте новый порт. |
+| Страница не открывается | Посмотрите `ps` и `logs server`; дождитесь окончания сборки и готовности PostgreSQL. |
+| Не удаётся войти через локальный HTTP | Укажите `COOKIE_SECURE=false` и точный `PUBLIC_ORIGIN=http://localhost:8080`, примените настройки. При переходе на `127.0.0.1` также измените `PUBLIC_ORIGIN`. |
+| Сервер отклоняет запрос браузера | Проверьте совпадение `PUBLIC_ORIGIN` с адресом страницы и настройку прокси. |
+| Не подходит токен первоначальной настройки | Используйте последний токен из текущего журнала; после перезапуска старый перестаёт действовать. |
+| Телефон не подключается | `localhost` телефона не указывает на компьютер. Нужен доступный HTTPS-адрес сервера с доверенным сертификатом. |
+| Ошибка пароля PostgreSQL после изменения `.env` | Пароль существующей базы не обновляется переменной окружения. Верните прежнее значение или отдельно измените пароль в PostgreSQL. |
+| Не хватает памяти при сборке | Увеличьте доступную Docker память; при сборке работают инструменты Node.js и Rust. |
+
+## Запуск из исходного кода
+
+Для веб-разработки используйте Node.js **22.23.0**, указанный в `.node-version`, и npm. Из корня проекта:
+
+```bash
+npm ci
+npm run dev:web
+```
+
+Откройте [http://localhost:5173](http://localhost:5173). Это локальный сервер разработки веб-интерфейса. Для полного сервера синхронизации с PostgreSQL используйте Docker Compose выше.
+
+Дополнительные команды:
+
+```bash
+npm run build:web
+npm run typecheck
+npm test
+```
+
+Сборка установленных приложений требует Rust и инструментов нужной платформы; Android также требует JDK, Android SDK и NDK. Версии инструментов, подпись APK, GitHub Actions и публикация пакетов описаны в [руководстве по сборкам и релизам](docs/releases.md). Проверки сервера и SQLite — в [руководстве по проверкам](docs/testing.md).
+
+## Документация
+
+Главная инструкция на русском находится на этой странице. Дополнительные документы могут быть на английском; отдельные руководства отражают более ранние этапы, поэтому актуальные сведения о выпуске и проверках смотрите также в статусе проекта.
+
+| Документ | Содержание |
+|---|---|
+| [Руководство пользователя](docs/user/ru.md) | Работа с документами, сочетания клавиш и настройки. |
+| [Руководство пользователя на английском](docs/user/en.md) | Дополнительная инструкция на английском. |
+| [Статус проекта](docs/status.md) | Реализованные функции, результаты проверок и ограничения платформ. |
+| [План](docs/plan.md) | Этапы разработки и критерии готовности. |
+| [Развёртывание](docs/deployment.md) | Дополнительные примеры прокси и обслуживания сервера. |
+| [Безопасность](docs/security.md) | Границы доверия и защита данных. |
+| [Сборки и релизы](docs/releases.md) | Android, подпись, автоматизация сборки и публикация. |
+| [Архитектура](docs/architecture.md) | Устройство приложения и принятые решения. |
+| [API](docs/api.md) | Серверные запросы и протокол. |
+| [Проверки](docs/testing.md) | Проверка веб-версии, сервера и локального хранилища. |
+| [Участие в разработке](docs/contributing.md) | Правила внесения изменений. |
+| [AGENTS.md](AGENTS.md) | Правила работы с репозиторием. |
