@@ -2,6 +2,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -20,10 +21,11 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, re
-          tag = os.environ['GITHUB_REF_NAME']
-          assert re.fullmatch(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', tag), 'Invalid version tag'
           version = json.load(open('apps/desktop/src-tauri/tauri.conf.json'))['version']
-          assert tag == 'v' + version, 'Tag must match Tauri version'
+          if os.environ['GITHUB_EVENT_NAME'] == 'push':
+              tag = os.environ['GITHUB_REF_NAME']
+              assert re.fullmatch(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', tag), 'Invalid version tag'
+              assert tag == 'v' + version, 'Tag must match Tauri version'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('version=' + version + '\n')
           PY
@@ -139,11 +141,9 @@ jobs:
           name: release-android-arm64
           path: release-artifacts/*
           if-no-files-found: error
-  publish:
+  aggregate:
     needs: [validation, version, desktop, android]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -166,6 +166,23 @@ jobs:
               lines.append(hashlib.file_digest(p.open('rb'), 'sha256').hexdigest() + '  ' + p.name)
           (root / 'SHA256SUMS.txt').write_text('\n'.join(lines) + '\n')
           PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: complete-release
+          path: release-artifacts/*
+          if-no-files-found: error
+  publish:
+    needs: aggregate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: complete-release
+          path: release-artifacts
       - name: Publish only after all required packages succeed
         env:
           GH_TOKEN: ${{ github.token }}

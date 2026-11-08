@@ -5,6 +5,12 @@ the web/library suite through real Rust SQLite, server PostgreSQL integration te
 Rust formatting/Clippy, and an ARM64 Android debug build plus Kotlin tests.
 Actions are pinned to immutable commits. No `pull_request_target` or PR signing job is used.
 
+Manual dispatch of **Release** builds and verifies the complete installer/APK/checksum set
+as Actions artifacts without creating or publishing a GitHub Release or container image.
+Only a pushed version tag can reach the publishing job. CI and release validation have separate
+concurrency groups. Android CI uses the runner's installed Gradle 9.8.2 with an explicit version
+guard; local builds retain the checksum-pinned 9.6.1 wrapper or an explicit `MAVYN_GRADLE_BIN`.
+
 ## Android identity
 
 Application ID: `app.mavyn.desktop`. Minimum Android API 24; target/compile API 36.
