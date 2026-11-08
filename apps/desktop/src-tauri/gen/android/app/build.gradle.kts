@@ -14,6 +14,13 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val releaseSigning = listOf("MAVYN_KEYSTORE", "MAVYN_KEYSTORE_PASSWORD", "MAVYN_KEY_ALIAS", "MAVYN_KEY_PASSWORD")
+val hasReleaseSigning = releaseSigning.all { !System.getenv(it).isNullOrBlank() }
+val requestsRelease = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
+if (requestsRelease && !hasReleaseSigning) {
+    throw GradleException("Release signing requires: ${releaseSigning.joinToString()}. See docs/releases.md.")
+}
+
 android {
     compileSdk = 36
     namespace = "app.mavyn.desktop"
@@ -22,8 +29,17 @@ android {
         applicationId = "app.mavyn.desktop"
         minSdk = 24
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
+        versionCode = (System.getenv("MAVYN_ANDROID_VERSION_CODE")?.takeIf { it.isNotBlank() } ?: tauriProperties.getProperty("tauri.android.versionCode", "1")).toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (hasReleaseSigning) create("mavynRelease") {
+            storeFile = file(System.getenv("MAVYN_KEYSTORE"))
+            storePassword = System.getenv("MAVYN_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("MAVYN_KEY_ALIAS")
+            keyPassword = System.getenv("MAVYN_KEY_PASSWORD")
+            storeType = "PKCS12"
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -39,6 +55,9 @@ android {
             }
         }
         getByName("release") {
+            isDebuggable = false
+            isJniDebuggable = false
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("mavynRelease")
             optimization {
                enable = true
             }

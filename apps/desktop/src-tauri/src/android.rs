@@ -31,9 +31,13 @@ pub async fn pick_markdown_files(app: AppHandle, multiple: bool, link: bool) -> 
 }
 
 #[tauri::command]
-pub fn take_launch_files() -> Value {
-    // Android intent associations are disabled until their lifecycle is implemented.
-    json!([])
+pub async fn take_launch_files(app: AppHandle) -> CmdResult<Value> {
+    mobile(app, "peekIncoming", json!({})).await
+}
+
+#[tauri::command]
+pub async fn ack_incoming(app: AppHandle, id: String) -> CmdResult<Value> {
+    mobile(app, "ackIncoming", json!({ "id": id })).await
 }
 
 #[tauri::command]

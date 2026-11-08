@@ -1,4 +1,12 @@
 # Add project specific ProGuard rules here.
+
+# Tauri discovers plugins, commands, and Jackson argument fields through reflection.
+-keep @app.tauri.annotation.TauriPlugin class * { *; }
+-keep @app.tauri.annotation.InvokeArg class * { *; }
+-keepclassmembers class * {
+    @app.tauri.annotation.Command <methods>;
+    @app.tauri.annotation.ActivityCallback <methods>;
+}
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
 #

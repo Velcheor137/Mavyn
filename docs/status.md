@@ -161,3 +161,19 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 - Filename-only rename is local metadata; server-side rename synchronization remains pending.
 - Sync covers document text and file names; folders inside the synced folder, tags and favorites are local only.
 - The web app syncs only with the server it is served from; the dev server can proxy `/api` with `MDR_API_PROXY`.
+
+## Android delivery and distribution continuation — in progress 2026-11-08
+
+- Android handles content-URI VIEW and SEND/SEND_MULTIPLE plus shared text as managed copies.
+  A bounded app-private mailbox keeps snapshots until SQLite commits them. Stable UUIDv7 import
+  IDs make retry safe without overwriting later edits. File associations use explicit text MIME
+  types; no broad filesystem permission or writable link authorization is granted by an Intent.
+- Verified on the Android 16 x86_64 emulator: cold/warm text shares; a separate read-only provider
+  application delivering VIEW and deduplicated multiple files; Cyrillic/BOM/CRLF retained in
+  SQLite. Physical ARM64 device remains unavailable in adb. Kotlin mailbox tests 3/3; strict TS
+  and 173 Vitest tests, including real SQLite bridge, passed locally.
+- Built release ARM64/x86_64 APKs with a separate production key. ARM64 signature, expected
+  signer, non-debuggable flag, package/version and ZIP alignment verified. Actual release UI
+  and upgrade validation are still in progress; this does not imply physical-phone validation.
+- Added CI/release/container workflows and signing instructions. GitHub signing secrets were
+  provisioned securely. Actions runtime results are pending; no public release/tag was created.

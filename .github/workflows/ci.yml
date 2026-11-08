@@ -1,0 +1,87 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  frontend-sqlite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
+      - run: rustup default 1.95.0
+      - run: cargo fmt --manifest-path crates/local-store/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/local-store/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path crates/local-store/Cargo.toml --locked
+      - run: cargo build --manifest-path crates/local-store/Cargo.toml --example storage_bridge --locked
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Test web and real SQLite contracts
+        run: |
+          export MAVYN_STORAGE_BRIDGE="[\"$GITHUB_WORKSPACE/crates/local-store/target/debug/examples/storage_bridge\"]"
+          npm test -- --maxWorkers 2 --testTimeout 15000
+      - run: npm run build:web
+      - run: npm run build -w @mdr/desktop
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15.13-bookworm
+        env:
+          POSTGRES_USER: mavyn
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mavyn" --health-interval 5s
+          --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgres://mavyn:ci-only-password@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
+      - run: rustup default 1.95.0
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: rustup toolchain install 1.95.0 --profile minimal --target aarch64-linux-android
+      - run: rustup default 1.95.0
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - run: echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - run: npm ci --no-audit --no-fund
+      - name: Build ARM64 debug APK without signing secrets
+        working-directory: apps/desktop
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: npm run tauri -- android build --debug --apk --split-per-abi --target aarch64 --ci
+      - name: Kotlin policy and durable delivery tests
+        working-directory: apps/desktop/src-tauri/gen/android
+        run: ./gradlew :tauri-plugin-mavyn-files:testDebugUnitTest --max-workers=2 --console=plain

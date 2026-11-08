@@ -10,7 +10,7 @@ describe('native platform routing', () => {
     invoke.mockResolvedValueOnce('android');
     const adapter = await TauriPlatformAdapter.create();
     expect(adapter.kind).toBe('android');
-    expect(adapter.capabilities).toEqual({ linkFiles: true, fileAssociations: false, print: false });
+    expect(adapter.capabilities).toEqual({ linkFiles: true, fileAssociations: true, print: false });
   });
 
   it('keeps desktop capabilities', async () => {

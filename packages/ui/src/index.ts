@@ -8,7 +8,7 @@ export {
   usePreferences,
   type Preferences,
 } from './preferences.ts';
-export { initWorkspace, useWorkspace, getSession, resetWorkspaceForTests, openDocument, addFiles } from './workspace.ts';
+export { initWorkspace, useWorkspace, getSession, resetWorkspaceForTests, openDocument, addFiles, notifyError } from './workspace.ts';
 export { buildStandaloneHtml } from './export.ts';
 export { THEME_BOOTSTRAP_SCRIPT, PREFS_KEY } from './theme-bootstrap.ts';
 export { initSync, resetSyncForTests, useSync } from './sync.ts';

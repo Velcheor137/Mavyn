@@ -14,6 +14,7 @@ import type { SearchHit } from '@mdr/storage';
 import { create } from 'zustand';
 import { loadWorkspaceSnapshot, saveWorkspaceSnapshot, usePreferences, type ViewMode } from './preferences.ts';
 import type { AppServices } from './services.tsx';
+import { importPickedFile } from './import-files.ts';
 
 export type Section =
   | { kind: 'all' }
@@ -233,21 +234,22 @@ export async function createDocument(title: string): Promise<void> {
 }
 
 /** Adds picked/dropped files. Linked files keep a locator for in-place saving. */
-export async function addFiles(files: PickedFile[]): Promise<void> {
+export async function addFiles(files: PickedFile[]): Promise<PickedFile[]> {
   const { library } = svc();
   let lastId: string | null = null;
+  const saved: PickedFile[] = [];
   for (const file of files) {
     try {
-      const decoded = decodeUtf8(file.bytes);
-      const source = file.locator && file.fingerprint ? ({ kind: 'linked', locator: file.locator, fingerprint: file.fingerprint } as const) : undefined;
-      const meta = await library.createDocument({ text: decoded.text, bom: decoded.bom, fileName: file.name, ...(source ? { source } : {}) });
-      lastId = meta.id;
+      const meta = await importPickedFile(library, file);
+      saved.push(file);
+      if (!meta.deletedAt) lastId = meta.id;
     } catch (error) {
       notifyError(error);
     }
   }
   await refreshLibrary();
   if (lastId) await openDocument(lastId);
+  return saved;
 }
 
 export async function updateDocument(id: string, patch: Parameters<AppServices['library']['updateMeta']>[1]): Promise<void> {

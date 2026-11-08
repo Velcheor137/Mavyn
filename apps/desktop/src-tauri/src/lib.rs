@@ -101,6 +101,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             android::pick_markdown_files,
             android::take_launch_files,
+            android::ack_incoming,
             android::read_linked,
             android::write_linked,
             android::save_as,

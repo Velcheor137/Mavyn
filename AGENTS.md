@@ -51,6 +51,7 @@ version. Test it with `cargo test --manifest-path crates/local-store/Cargo.toml`
 6. Server: every handler that touches a library-scoped resource calls the authz check. Return
    stable error codes, never English sentences, to clients.
 7. Treat every Markdown document as hostile input. Changes to the sanitize schema need a test.
-8. No GitHub workflows, release automation, or publishing in this phase.
+8. GitHub CI and release automation are authorized. Publishing a public release requires an
+   explicit request to publish/push a version tag; never create a release tag as part of setup.
 9. Do not claim a platform is verified unless it was run. Update `docs/status.md` honestly.
 10. Add or update tests with each behaviour change; run typecheck + tests before declaring done.

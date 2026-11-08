@@ -3,6 +3,7 @@ import { AppError, type ErrorCode, type FileFingerprint } from '@mdr/core';
 import type { PickedFile, PlatformAdapter } from '@mdr/platform';
 
 interface NativePicked {
+  importId?: string;
   name: string;
   bytesBase64: string;
   locator: string;
@@ -32,14 +33,14 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
-const toPicked = (f: NativePicked): PickedFile => ({ name: f.name, bytes: fromBase64(f.bytesBase64), locator: f.locator, fingerprint: f.fingerprint });
+const toPicked = (f: NativePicked): PickedFile => ({ name: f.name, bytes: fromBase64(f.bytesBase64), locator: f.importId ? null : f.locator, fingerprint: f.importId ? null : f.fingerprint, ...(f.importId ? { importId: f.importId } : {}) });
 
 /** Windows/Linux paths and Android SAF share the same byte-preserving command contract. */
 export class TauriPlatformAdapter implements PlatformAdapter {
   readonly capabilities;
 
   constructor(readonly kind: 'desktop' | 'android' = 'desktop') {
-    this.capabilities = { linkFiles: true, fileAssociations: kind === 'desktop', print: kind === 'desktop' };
+    this.capabilities = { linkFiles: true, fileAssociations: true, print: kind === 'desktop' };
   }
 
   static async create(): Promise<TauriPlatformAdapter> {
@@ -67,5 +68,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   async takeLaunchFiles(): Promise<PickedFile[]> {
     return (await call<NativePicked[]>('take_launch_files')).map(toPicked);
+  }
+
+  async acknowledgeIncoming(id: string): Promise<void> {
+    if (this.kind === 'android') await call<boolean>('ack_incoming', { id });
   }
 }

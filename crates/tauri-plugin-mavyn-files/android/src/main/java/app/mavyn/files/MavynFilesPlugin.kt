@@ -9,6 +9,7 @@ import android.provider.OpenableColumns
 import android.system.Os
 import android.system.OsConstants
 import android.util.Base64
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
@@ -31,6 +32,7 @@ import java.util.concurrent.Executors
     lateinit var expected: FingerprintArgs
 }
 @InvokeArg class SaveArgs { lateinit var name: String; lateinit var bytesBase64: String }
+@InvokeArg class AckArgs { lateinit var id: String }
 
 @TauriPlugin
 class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
@@ -38,6 +40,72 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
     private val preferences = activity.getSharedPreferences("mavyn-saf", Activity.MODE_PRIVATE)
     private val io = Executors.newSingleThreadExecutor()
     private var pickerBusy = false
+    private val incoming by lazy { IncomingStore(java.io.File(activity.noBackupFilesDir, "incoming")) }
+
+    override fun load(webView: WebView) { receive(activity.intent) }
+    override fun onNewIntent(intent: Intent) { receive(intent) }
+
+    @Suppress("DEPRECATION")
+    private fun receive(intent: Intent?) {
+        if (intent?.action !in setOf(Intent.ACTION_VIEW, Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) return
+        // Do not re-import the launch Intent on WebView/activity recreation.
+        activity.intent = Intent(Intent.ACTION_MAIN)
+        io.execute {
+            try {
+                val uris = when (intent!!.action) {
+                    Intent.ACTION_VIEW -> listOfNotNull(intent.data)
+                    Intent.ACTION_SEND -> listOfNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+                    else -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.toList() ?: emptyList()
+                }.ifEmpty {
+                    intent!!.clipData?.let { clip ->
+                        if (clip.itemCount > IncomingStore.MAX_ENTRIES) throw SafFailure("storage.busy")
+                        (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                    } ?: emptyList()
+                }.distinct()
+                if (uris.size > IncomingStore.MAX_ENTRIES) throw SafFailure("storage.busy")
+                if (uris.isEmpty()) {
+                    if (intent!!.action != Intent.ACTION_SEND) throw SafFailure("file.unsupported")
+                    val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT) ?: throw SafFailure("file.unsupported")
+                    SafPolicy.requireSize(text.length.toLong())
+                    incoming.put("shared.md", text.toString().toByteArray(Charsets.UTF_8))
+                } else for (uri in uris) {
+                    if (uri.scheme != "content") throw SafFailure("file.unsupported")
+                    // Never let an external Intent read this application's private FileProvider.
+                    val provider = activity.packageManager.resolveContentProvider(uri.authority ?: "", 0)
+                    if (provider?.applicationInfo?.uid == android.os.Process.myUid()) throw SafFailure("file.permission_denied")
+                    val fileName = name(uri)
+                    SafPolicy.requireName(fileName)
+                    incoming.put(fileName, read(uri))
+                }
+            } catch (error: Exception) {
+                val code = when (error) {
+                    is SafFailure -> error.code
+                    is SecurityException -> "file.permission_denied"
+                    is FileNotFoundException -> "file.not_found"
+                    else -> "storage.failed"
+                }
+                preferences.edit().putString("incomingError", code).commit()
+            }
+        }
+    }
+
+    @Command fun peekIncoming(invoke: Invoke) { io.execute { answer(invoke) {
+        preferences.getString("incomingError", null)?.let {
+            preferences.edit().remove("incomingError").commit()
+            throw SafFailure(it)
+        }
+        val files = JSArray()
+        incoming.peek()?.let {
+            files.put(JSObject().put("importId", it.id).put("name", it.name)
+                .put("bytesBase64", Base64.encodeToString(it.bytes, Base64.NO_WRAP)))
+        }
+        files
+    } } }
+
+    @Command fun ackIncoming(invoke: Invoke) { io.execute { answer(invoke) {
+        incoming.ack(invoke.parseArgs(AckArgs::class.java).id)
+        true
+    } } }
 
     private fun answer(invoke: Invoke, action: () -> Any) {
         try { invoke.resolve(JSObject().put("value", action())) }

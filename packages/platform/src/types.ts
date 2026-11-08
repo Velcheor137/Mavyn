@@ -1,6 +1,8 @@
 import type { FileFingerprint } from '@mdr/core';
 
 export interface PickedFile {
+  /** Native durable delivery id; also the id of its managed document for crash-safe retry. */
+  importId?: string;
   name: string;
   bytes: Uint8Array;
   /** Present when the platform can save back to the original file. */

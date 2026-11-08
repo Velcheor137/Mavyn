@@ -3,11 +3,12 @@ import '@mdr/ui/styles.css';
 import { createI18n, detectLocale, I18nextProvider } from '@mdr/i18n';
 import { render } from '@mdr/markdown-engine';
 import { toAppError } from '@mdr/core';
-import { addFiles, AppShell, initWorkspace, ServicesProvider, usePreferences, type AppServices } from '@mdr/ui';
+import { addFiles, AppShell, initWorkspace, notifyError, ServicesProvider, usePreferences, type AppServices } from '@mdr/ui';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { TauriPlatformAdapter } from './tauri-platform.ts';
 import { openNativeLibrary } from './storage.ts';
+import { startIncoming } from './incoming.ts';
 
 declare const __APP_VERSION__: string;
 
@@ -37,8 +38,7 @@ async function boot(): Promise<void> {
       </StrictMode>,
     );
     await initWorkspace(services);
-    const launched = await platform.takeLaunchFiles().catch(() => []);
-    if (launched.length) await addFiles(launched);
+    await startIncoming(platform, addFiles, notifyError);
   } catch (cause) {
     const error = toAppError(cause);
     root.render(<main className="p-5 grid gap-3">
