@@ -8,7 +8,7 @@ Goals: local-first Markdown reader/editor/library with optional self-hosted sync
 Android (Tauri 2), web/PWA; first-class English and Russian.
 
 Non-goals: real-time character-level co-editing (no CRDT), proprietary file formats, a separate
-search service, release/publishing automation (handled by a later task).
+search service. Release automation is documented separately in `docs/releases.md`.
 
 ## 2. Layering
 

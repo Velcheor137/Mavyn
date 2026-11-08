@@ -197,4 +197,31 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 - A separate signer installed release 0.1.0 and upgraded it to 0.1.1 (versionCode 1000 -> 1001)
   on the x86_64 emulator without removing its document. ARM64 release signature, package,
   non-debuggable flag and 16 KB ZIP alignment verified. Final GUI offline/logout checks and
-  CI Android checks are still in progress. No physical ARM64 phone is attached.
+  CI Android checks are recorded in the completion note below. No physical ARM64 phone is attached.
+
+## Distribution and sync verification completion — 2026-11-08
+
+- Main application/build commit `4e39c1a`: CI run
+  [42488761370](https://github.com/Velcheor137/Mavyn/actions/runs/42488761370) passed frontend,
+  real SQLite contracts, PostgreSQL server tests, Rust checks, ARM64 Android debug build and
+  Kotlin tests. Manual package run
+  [42488762587](https://github.com/Velcheor137/Mavyn/actions/runs/42488762587) passed Windows x64
+  NSIS, Linux x86_64 DEB/RPM, signed Android ARM64 APK and full-set checksum aggregation.
+  Publishing and GHCR were skipped; no public tag/release was created. The GHCR workflow is
+  configured, but its multiarch build/publication has not been executed in this task.
+- Resolved actual CI HTTP 504 failures: use a guarded installed Gradle; make the small Rust
+  buildSrc bridge Java so it does not fetch an extra Gradle Kotlin compiler; prepare exactly
+  the expected NSIS utility through GitHub's asset API with pinned SHA-256/vendor SHA-1 checks.
+  No bundler verification or TLS checks were disabled.
+- Rebuilt the final signed local ARM64 APK through the new Java build task, including native
+  Rust compilation. Signature, package/version, non-debuggable status, ZIP alignment and all
+  ARM64 ELF LOAD segments at 16 KB verified. Signing key remains external to Git; recovery and
+  owner-managed portable backup are described in `docs/releases.md`.
+- Windows restored its session after a real app restart; its native logout probe removed the
+  Credential Manager entry. Android's actual offline edit remained durable after force-stop:
+  SQLite/WAL/quick_check/hash/CRLF passed, and its content differed from its retained server base.
+  Encrypted Android session storage was observed; settings contained no plaintext credentials.
+- Still unverified: physical ARM64 phone (not attached), and the final Android GUI reconnect/
+  logout sequence after interruption. Automatic tool review rejected restarting the emulator
+  with `blocked by policy`; no bypass was attempted. Unit coverage for native startup retry
+  and conflict/logout retirement passed, but is not a substitute for that missing GUI check.
