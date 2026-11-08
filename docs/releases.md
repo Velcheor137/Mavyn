@@ -10,6 +10,10 @@ as Actions artifacts without creating or publishing a GitHub Release or containe
 Only a pushed version tag can reach the publishing job. CI and release validation have separate
 concurrency groups. Android CI uses the runner's installed Gradle 9.8.2 with an explicit version
 guard; local builds retain the checksum-pinned 9.6.1 wrapper or an explicit `MAVYN_GRADLE_BIN`.
+The small Android `buildSrc` bridge uses Java, so it does not fetch a second Kotlin compiler
+for Gradle's Kotlin DSL. Application/plugin Kotlin remains at 2.2.10. Windows prepares the
+exact NSIS/Tauri utility versions expected by the locked CLI using GitHub's asset API, checking
+both pinned SHA-256 and Tauri's own SHA-1 values before extraction; bundler verification remains on.
 
 ## Android identity
 
