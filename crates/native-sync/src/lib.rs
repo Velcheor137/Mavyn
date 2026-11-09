@@ -73,8 +73,9 @@ fn route(base: &str, request: &Request) -> Result<Url> {
         ["auth", "login" | "logout"] => method == "POST",
         ["libraries"] => matches!(method, "GET" | "POST"),
         ["libraries", library, "changes"] => id(library) && method == "GET",
-        ["libraries", library, "documents"] => id(library) && method == "POST",
-        ["documents", document] => id(document) && matches!(method, "GET" | "DELETE"),
+        ["libraries", library, "documents" | "folders"] => id(library) && method == "POST",
+        ["documents", document] => id(document) && matches!(method, "GET" | "PATCH" | "DELETE"),
+        ["folders", folder] => id(folder) && matches!(method, "PATCH" | "DELETE"),
         ["documents", document, "content"] => id(document) && method == "PUT",
         _ => false,
     };

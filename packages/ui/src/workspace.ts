@@ -231,11 +231,15 @@ export function setReadingPosition(id: string, fraction: number): void {
  */
 export async function createDocument(title: string): Promise<void> {
   const { library } = svc();
-  const { section, folders } = useWorkspace.getState();
+  const { section, folders, documents } = useWorkspace.getState();
   const folderId = section.kind === 'folder' && folders.some((f) => f.id === section.folderId) ? section.folderId : null;
+  // "Untitled", "Untitled 2", …: distinct names in the folder, also for exports and other devices.
+  const taken = new Set(documents.filter((d) => d.deletedAt === null && d.folderId === folderId).map((d) => d.fileName.toLowerCase()));
+  let name = title;
+  for (let n = 2; taken.has(`${name}.md`.toLowerCase()); n++) name = `${title} ${n}`;
   const meta = await library.createDocument({
-    text: `# ${title}\n\n`,
-    fileName: `${title}.md`,
+    text: `# ${name}\n\n`,
+    fileName: `${name}.md`,
     folderId,
     tags: section.kind === 'tag' ? [section.tag] : [],
   });

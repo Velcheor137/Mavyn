@@ -75,6 +75,7 @@ pub mod codes {
     pub const LAST_OWNER: &str = "library.last_owner";
     pub const LIBRARY_NOT_FOUND: &str = "library.not_found";
     pub const DOCUMENT_NOT_FOUND: &str = "document.not_found";
+    pub const FOLDER_NOT_FOUND: &str = "folder.not_found";
     pub const CONFLICT: &str = "sync.conflict";
     pub const PROTOCOL: &str = "sync.protocol_unsupported";
     pub const INTERNAL: &str = "server.internal";

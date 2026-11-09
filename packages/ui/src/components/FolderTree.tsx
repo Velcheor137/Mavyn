@@ -1,7 +1,8 @@
 import { compareNames, type DocumentMeta, type Folder } from '@mdr/core';
 import { useTranslation } from '@mdr/i18n';
 import * as Menu from '@radix-ui/react-dropdown-menu';
-import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, FolderInput, MoreHorizontal, Pencil } from 'lucide-react';
+import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, FolderInput, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { useSync } from '../sync.ts';
 import { useState } from 'react';
 import { useWorkspace } from '../workspace.ts';
 import type { LibraryAction } from './LibraryDialogs.tsx';
@@ -9,6 +10,8 @@ import type { LibraryAction } from './LibraryDialogs.tsx';
 export function FolderTree({ folders, documents, onAction }: { folders: Folder[]; documents: DocumentMeta[]; onAction(action: LibraryAction): void }) {
   const { t, i18n } = useTranslation();
   const section = useWorkspace((s) => s.section);
+  // Deleting the synced folder itself would delete the whole server library.
+  const syncRoot = useSync((s) => s.connection?.folderId ?? null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const ids = new Set(folders.map((f) => f.id));
   const children = new Map<string | null, Folder[]>();
@@ -45,6 +48,7 @@ export function FolderTree({ folders, documents, onAction }: { folders: Folder[]
                 <Menu.Item className="menu-item" onSelect={() => { setCollapsed((previous) => new Set([...previous].filter((id) => id !== folder.id))); onAction({ kind: 'createFolder', parentId: folder.id }); }}><FolderPlus size={14} aria-hidden />{t('folders.newChild')}</Menu.Item>
                 <Menu.Item className="menu-item" onSelect={() => onAction({ kind: 'renameFolder', folder })}><Pencil size={14} aria-hidden />{t('folders.rename')}</Menu.Item>
                 <Menu.Item className="menu-item" onSelect={() => onAction({ kind: 'moveFolder', folder })}><FolderInput size={14} aria-hidden />{t('folders.move')}</Menu.Item>
+                {folder.id !== syncRoot && <Menu.Item className="menu-item menu-item-danger" onSelect={() => onAction({ kind: 'deleteFolder', folder })}><Trash2 size={14} aria-hidden />{t('folders.delete')}</Menu.Item>}
               </Menu.Content></Menu.Portal>
             </Menu.Root>
           </div>

@@ -1,11 +1,27 @@
 import { sha256Hex, uuidv7 } from '@mdr/core';
 import { SyncHttpError, type SyncApi } from './api.ts';
-import type { ChangesResponse, CreateDocumentRequest, DocumentInfo, DocumentWithContent, LibraryInfo, MeResponse, UpdateContentRequest } from './protocol.ts';
+import type {
+  ChangesResponse,
+  CreateDocumentRequest,
+  CreateFolderRequest,
+  DocumentInfo,
+  DocumentWithContent,
+  FolderInfo,
+  LibraryInfo,
+  MeResponse,
+  UpdateContentRequest,
+  UpdateDocumentMetaRequest,
+  UpdateFolderRequest,
+} from './protocol.ts';
 
 interface StoredDoc extends DocumentInfo {
   content: string;
   seq: number;
   revisions: number;
+}
+
+interface StoredFolder extends FolderInfo {
+  seq: number;
 }
 
 /**
@@ -15,9 +31,12 @@ interface StoredDoc extends DocumentInfo {
  */
 export class FakeServer {
   readonly docs = new Map<string, StoredDoc>();
+  readonly folders = new Map<string, StoredFolder>();
   private readonly ops = new Map<string, DocumentInfo>();
   private seq = 0;
   readonly libraryId = uuidv7();
+  /** The fake serves one library; a brand-new server has none until one is created. */
+  libraries: LibraryInfo[] = [{ id: this.libraryId, name: 'Shared', role: 'owner' }];
   /** The next call of this operation fails as if the network dropped *after* the server applied it. */
   dropResponseOf: 'createDocument' | 'updateContent' | 'deleteDocument' | null = null;
   offline = false;
@@ -63,13 +82,22 @@ export class FakeServer {
         guard(async () => {
           signedIn = this.password === null;
         }),
-      listLibraries: () => guard(async (): Promise<LibraryInfo[]> => [{ id: this.libraryId, name: 'Shared', role: 'owner' }]),
-      createLibrary: (name) => guard(async (): Promise<LibraryInfo> => ({ id: this.libraryId, name, role: 'owner' })),
+      listLibraries: () => guard(async () => this.libraries),
+      createLibrary: (name) =>
+        guard(async (): Promise<LibraryInfo> => {
+          const library: LibraryInfo = { id: this.libraryId, name, role: 'owner' };
+          this.libraries = [library];
+          return library;
+        }),
       changes: (_lib, cursor) => guard(async () => this.changes(cursor)),
       getDocument: (id) => guard(async () => this.get(id)),
       createDocument: (_lib, req, opId) => guard(() => this.create(req, opId), 'createDocument'),
       updateContent: (id, req, opId) => guard(() => this.update(id, req, opId), 'updateContent'),
+      updateDocumentMeta: (id, req) => guard(async () => this.updateMeta(id, req)),
       deleteDocument: (id) => guard(async () => this.remove(id), 'deleteDocument'),
+      createFolder: (_lib, req) => guard(async () => this.createFolder(req)),
+      updateFolder: (id, req) => guard(async () => this.updateFolder(id, req)),
+      deleteFolder: (id) => guard(async () => this.deleteFolder(id)),
     };
   }
 
@@ -81,7 +109,69 @@ export class FakeServer {
   private changes(cursor: string): ChangesResponse {
     const after = Number(cursor || 0);
     const docs = [...this.docs.values()].filter((d) => d.seq > after).sort((a, b) => a.seq - b.seq);
-    return { documents: docs.map((d) => this.info(d)), cursor: String(docs.at(-1)?.seq ?? after), has_more: false };
+    const folders = [...this.folders.values()].filter((f) => f.seq > after).sort((a, b) => a.seq - b.seq);
+    return {
+      documents: docs.map((d) => this.info(d)),
+      folders: folders.map((f) => this.folderInfo(f)),
+      cursor: String(Math.max(after, docs.at(-1)?.seq ?? 0, folders.at(-1)?.seq ?? 0)),
+      has_more: false,
+    };
+  }
+
+  private folderInfo(folder: StoredFolder): FolderInfo {
+    const { seq: _s, ...info } = folder;
+    return info;
+  }
+
+  private liveFolder(id: string | null): boolean {
+    return id !== null && this.folders.get(id)?.deleted_at === null;
+  }
+
+  createFolder(req: CreateFolderRequest): FolderInfo {
+    const existing = this.folders.get(req.id);
+    if (existing) return this.folderInfo(existing);
+    const parent = this.liveFolder(req.parent_id) ? req.parent_id : null;
+    const same = [...this.folders.values()].find((f) => f.deleted_at === null && f.parent_id === parent && f.name.toLowerCase() === req.name.trim().toLowerCase());
+    if (same) return this.folderInfo(same);
+    const folder: StoredFolder = { id: req.id, library_id: this.libraryId, parent_id: parent, name: req.name.trim(), updated_at: new Date().toISOString(), deleted_at: null, seq: ++this.seq };
+    this.folders.set(folder.id, folder);
+    return this.folderInfo(folder);
+  }
+
+  updateFolder(id: string, req: UpdateFolderRequest): FolderInfo {
+    const folder = this.folders.get(id);
+    if (!folder || folder.deleted_at) throw new SyncHttpError(404, 'folder.not_found', null);
+    const name = req.name !== req.base_name && folder.name === req.base_name ? req.name.trim() : folder.name;
+    let parent = folder.parent_id;
+    if (req.parent_id !== req.base_parent_id && folder.parent_id === req.base_parent_id && (req.parent_id === null || this.liveFolder(req.parent_id))) {
+      let cycle = false;
+      for (let cur = req.parent_id; cur !== null; cur = this.folders.get(cur)?.parent_id ?? null) if (cur === id) cycle = true;
+      if (!cycle) parent = req.parent_id;
+    }
+    if (name !== folder.name || parent !== folder.parent_id) Object.assign(folder, { name, parent_id: parent, seq: ++this.seq, updated_at: new Date().toISOString() });
+    return this.folderInfo(folder);
+  }
+
+  deleteFolder(id: string): void {
+    if (!this.folders.has(id)) throw new SyncHttpError(404, 'folder.not_found', null);
+    const ids = new Set([id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const f of this.folders.values()) if (f.parent_id && ids.has(f.parent_id) && !ids.has(f.id)) { ids.add(f.id); grew = true; }
+    }
+    const now = new Date().toISOString();
+    for (const d of this.docs.values()) if (d.folder_id && ids.has(d.folder_id) && !d.deleted_at) Object.assign(d, { deleted_at: now, seq: ++this.seq });
+    for (const f of this.folders.values()) if (ids.has(f.id) && !f.deleted_at) Object.assign(f, { deleted_at: now, seq: ++this.seq });
+  }
+
+  updateMeta(id: string, req: UpdateDocumentMetaRequest): DocumentInfo {
+    const doc = this.docs.get(id);
+    if (!doc || doc.deleted_at) throw new SyncHttpError(404, 'document.not_found', null);
+    const fileName = req.file_name !== req.base_file_name && doc.file_name === req.base_file_name ? req.file_name : doc.file_name;
+    const moveOk = req.folder_id === null || this.liveFolder(req.folder_id);
+    const folderId = req.folder_id !== req.base_folder_id && doc.folder_id === req.base_folder_id && moveOk ? req.folder_id : doc.folder_id;
+    if (fileName !== doc.file_name || folderId !== doc.folder_id) Object.assign(doc, { file_name: fileName, folder_id: folderId, seq: ++this.seq, updated_at: new Date().toISOString() });
+    return this.info(doc);
   }
 
   private get(id: string): DocumentWithContent {
@@ -97,7 +187,7 @@ export class FakeServer {
     const doc: StoredDoc = {
       id: req.id,
       library_id: this.libraryId,
-      folder_id: null,
+      folder_id: this.liveFolder(req.folder_id ?? null) ? req.folder_id! : null,
       title: req.file_name,
       file_name: req.file_name,
       head_revision_id: uuidv7(),

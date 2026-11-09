@@ -11,7 +11,7 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use error::ApiError;
 use mdr_domain::codes;
@@ -55,7 +55,7 @@ async fn protocol_guard(request: Request, next: Next) -> Response {
 }
 
 pub fn app(state: AppState) -> Router {
-    use routes::{auth, documents, libraries};
+    use routes::{auth, documents, folders, libraries};
     let body_limit = state.config.max_document_bytes + 64 * 1024;
 
     let api = Router::new()
@@ -80,11 +80,18 @@ pub fn app(state: AppState) -> Router {
             "/libraries/{id}/documents",
             get(documents::list).post(documents::create),
         )
+        .route("/libraries/{id}/folders", post(folders::create))
+        .route(
+            "/folders/{id}",
+            patch(folders::update).delete(folders::delete),
+        )
         .route("/libraries/{id}/changes", get(documents::changes))
         .route("/libraries/{id}/search", get(documents::search))
         .route(
             "/documents/{id}",
-            get(documents::get).delete(documents::delete),
+            get(documents::get)
+                .patch(documents::update_meta)
+                .delete(documents::delete),
         )
         .route("/documents/{id}/content", put(documents::update_content))
         .route("/documents/{id}/revisions", get(documents::revisions))

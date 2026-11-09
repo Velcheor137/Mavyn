@@ -35,13 +35,13 @@ Move dialogs exclude the folder itself and its descendants.
 
 In the document's **More actions** menu, **Rename** edits the library file name and
 **Move to folder** chooses a destination, including **Library root**. Text and version
-history stay intact. A heading-derived document title does not change when renaming.
-Linked files keep their names and locations on disk.
+history stay intact. A document with a heading is listed by its heading, otherwise by its
+file name. Linked files keep their names and locations on disk.
 
-Folder structure stays local. Moving an already synced document does not disconnect
-it from its server library. Moving a local document directly into the configured sync
-folder uploads it; subfolders are not enrolled automatically. Filename-only renames
-are currently local metadata and may be replaced by a subsequent server refresh.
+**Delete folder** in the folder's **…** menu moves the folder, its subfolders and their
+documents to Trash after confirmation. The synced folder itself cannot be deleted from the menu.
+
+New documents are named "Untitled", "Untitled 2" and so on, so names in one folder stay distinct.
 
 ## Reading and editing
 
@@ -104,9 +104,16 @@ the browser. A device you signed in on before also opens while the server is unr
 
 1. Settings → **Server** shows the signed-in account.
 2. Choose a server library (or create one) and press **Start syncing**.
-3. The library appears as a folder of the same name. Local documents directly in that folder
-   are enrolled in sync. Once enrolled, they continue syncing even if moved elsewhere locally.
-   Other local documents and nested folder structure stay on this device.
+3. The library appears as a folder of the same name. Everything inside it — subfolders,
+   documents, their names and locations — is the same on the server and on every device:
+   create, rename, move or delete a folder or document on one device and the others follow.
+   Documents outside that folder stay on this device only. If the account has a single server
+   library, it is connected automatically.
+
+If the same field (say, a document's name) was changed on two devices at once, the change that
+reached the server first stays; different fields (name on one, folder on the other) are both kept.
+Identical folders created on two devices while offline are merged. A synced document moved to a
+folder outside sync keeps syncing its text but stays in its old place on the other devices.
 
 The status next to *Settings* shows Synced, Waiting to sync, Syncing, Offline or Conflict; click it
 to sync now. You can keep working offline — changes upload when the connection returns.
@@ -123,4 +130,5 @@ folder is uploaded automatically.
 computers. Documents with changes that were never uploaded are always kept as local documents.
 Copies already on a device cannot be deleted remotely.
 
-The Windows/Linux/Android apps and QR-code setup do not support sync yet.
+In the Windows/Linux/Android apps, enter the server address in Settings → **Server**; the rest
+works the same. QR-code setup is not supported yet.

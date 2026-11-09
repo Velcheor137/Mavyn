@@ -1,6 +1,7 @@
 use crate::auth::{require_document_role, require_role, AuthUser};
 use crate::crypto;
 use crate::error::{ApiError, ApiResult};
+use crate::routes::folders::{is_live_folder, lock_library, FolderRow, FOLDER_COLUMNS};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -9,7 +10,7 @@ use axum::Json;
 use mdr_domain::{codes, Role};
 use mdr_sync_protocol::{
     ChangesResponse, ConflictDetails, CreateDocumentRequest, DocumentInfo, DocumentWithContent,
-    RevisionInfo, SearchHit, UpdateContentRequest,
+    RevisionInfo, SearchHit, UpdateContentRequest, UpdateDocumentMetaRequest,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -127,6 +128,14 @@ async fn record_op(
     Ok(())
 }
 
+fn valid_file_name(name: &str) -> ApiResult<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 255 || name.contains(['/', '\\', '\0']) {
+        return Err(ApiError::bad_request("file_name"));
+    }
+    Ok(name)
+}
+
 fn check_size(state: &AppState, content: &str) -> ApiResult<()> {
     if content.len() > state.config.max_document_bytes {
         return Err(
@@ -182,14 +191,16 @@ pub async fn create(
         return Ok(response);
     }
     check_size(&state, &body.content)?;
-    let file_name = body.file_name.trim();
-    if file_name.is_empty() || file_name.len() > 255 || file_name.contains(['/', '\\', '\0']) {
-        return Err(ApiError::bad_request("file_name"));
-    }
+    let file_name = valid_file_name(&body.file_name)?;
     let title = derive_title(&body.content, file_name);
     let revision_id = Uuid::now_v7();
 
     let mut tx = state.db.begin().await?;
+    // A folder deleted meanwhile (or never uploaded) leaves the document at the library root.
+    let folder_id = match body.folder_id {
+        Some(f) if is_live_folder(&mut tx, library_id, f).await? => Some(f),
+        _ => None,
+    };
     let hash = store_blob(&mut tx, &body.content).await?;
     let sql = format!(
         "INSERT INTO documents (id, library_id, folder_id, title, file_name, head_revision_id, content_hash, search)
@@ -199,7 +210,7 @@ pub async fn create(
     let row: Option<DocRow> = sqlx::query_as(&sql)
         .bind(body.id)
         .bind(library_id)
-        .bind(body.folder_id)
+        .bind(folder_id)
         .bind(&title)
         .bind(file_name)
         .bind(revision_id)
@@ -319,6 +330,68 @@ pub async fn update_content(
     Ok((StatusCode::OK, Json(response)).into_response())
 }
 
+/// Renames and/or moves a document (field-wise compare-and-swap, see `UpdateDocumentMetaRequest`).
+/// Text and history are untouched; other devices learn about it from the change feed.
+pub async fn update_meta(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateDocumentMetaRequest>,
+) -> ApiResult<Json<DocumentInfo>> {
+    let (library_id, _) = require_document_role(&state.db, &user, id, Role::Editor).await?;
+    let file_name = valid_file_name(&body.file_name)?;
+    let mut tx = state.db.begin().await?;
+    lock_library(&mut tx, library_id).await?;
+    let row: DocRow = sqlx::query_as(&format!(
+        "SELECT {DOC_COLUMNS} FROM documents WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if row.deleted_at.is_some() {
+        return Err(ApiError::not_found(codes::DOCUMENT_NOT_FOUND));
+    }
+    let new_name = if file_name != body.base_file_name && row.file_name == body.base_file_name {
+        file_name.to_owned()
+    } else {
+        row.file_name.clone()
+    };
+    let move_ok = match body.folder_id {
+        None => true,
+        Some(f) => is_live_folder(&mut tx, library_id, f).await?,
+    };
+    let new_folder =
+        if body.folder_id != body.base_folder_id && row.folder_id == body.base_folder_id && move_ok
+        {
+            body.folder_id
+        } else {
+            row.folder_id
+        };
+    if new_name == row.file_name && new_folder == row.folder_id {
+        return Ok(Json(row.into()));
+    }
+    let content: String = sqlx::query_scalar("SELECT content FROM blobs WHERE hash = $1")
+        .bind(&row.content_hash)
+        .fetch_one(&mut *tx)
+        .await?;
+    let title = derive_title(&content, &new_name);
+    let sql = format!(
+        "UPDATE documents SET file_name = $2, folder_id = $3, title = $4, updated_at = now(),
+         change_seq = nextval('change_seq'), search = {} WHERE id = $1 RETURNING {DOC_COLUMNS}",
+        SEARCH_VECTOR.replace("$T", "$4").replace("$C", "$5")
+    );
+    let row: DocRow = sqlx::query_as(&sql)
+        .bind(id)
+        .bind(&new_name)
+        .bind(new_folder)
+        .bind(&title)
+        .bind(&content)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(row.into()))
+}
+
 /// Soft delete: leaves a tombstone in the change feed so other devices remove their copies.
 pub async fn delete(
     State(state): State<AppState>,
@@ -389,7 +462,7 @@ pub async fn changes(
         Some(c) => c.parse().map_err(|_| ApiError::bad_request("cursor"))?,
     };
     let limit = q.limit.unwrap_or(500).clamp(1, 1000);
-    let mut rows: Vec<DocRowSeq> = sqlx::query_as(&format!(
+    let documents: Vec<DocRowSeq> = sqlx::query_as(&format!(
         "SELECT change_seq, {DOC_COLUMNS} FROM documents WHERE library_id = $1 AND change_seq > $2 ORDER BY change_seq LIMIT $3"
     ))
     .bind(library_id)
@@ -397,14 +470,48 @@ pub async fn changes(
     .bind(limit + 1)
     .fetch_all(&state.db)
     .await?;
-    let has_more = rows.len() as i64 > limit;
-    rows.truncate(limit as usize);
-    let cursor = rows.last().map_or(after, |r| r.change_seq).to_string();
+    let folders: Vec<FolderRowSeq> = sqlx::query_as(&format!(
+        "SELECT change_seq, {FOLDER_COLUMNS} FROM folders WHERE library_id = $1 AND change_seq > $2 ORDER BY change_seq LIMIT $3"
+    ))
+    .bind(library_id)
+    .bind(after)
+    .bind(limit + 1)
+    .fetch_all(&state.db)
+    .await?;
+    // Both tables draw from one sequence: take the first `limit` changes across them.
+    let mut seqs: Vec<i64> = documents
+        .iter()
+        .map(|d| d.change_seq)
+        .chain(folders.iter().map(|f| f.change_seq))
+        .collect();
+    seqs.sort_unstable();
+    let has_more = seqs.len() as i64 > limit;
+    let last = if has_more {
+        seqs[limit as usize - 1]
+    } else {
+        seqs.last().copied().unwrap_or(after)
+    };
     Ok(Json(ChangesResponse {
-        documents: rows.into_iter().map(Into::into).collect(),
-        cursor,
+        documents: documents
+            .into_iter()
+            .filter(|d| d.change_seq <= last)
+            .map(Into::into)
+            .collect(),
+        folders: folders
+            .into_iter()
+            .filter(|f| f.change_seq <= last)
+            .map(|f| f.folder.into())
+            .collect(),
+        cursor: last.to_string(),
         has_more,
     }))
+}
+
+#[derive(sqlx::FromRow)]
+struct FolderRowSeq {
+    change_seq: i64,
+    #[sqlx(flatten)]
+    folder: FolderRow,
 }
 
 #[derive(sqlx::FromRow)]

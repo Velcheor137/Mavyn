@@ -162,10 +162,55 @@ pub struct RevisionInfo {
     pub created_at: OffsetDateTime,
 }
 
+/// Field-wise compare-and-swap of a document's name and location. A field is changed only when the
+/// server still has its `base_*` value; otherwise the server value stays (the response shows it).
+#[derive(Debug, Deserialize)]
+pub struct UpdateDocumentMetaRequest {
+    pub base_file_name: String,
+    pub base_folder_id: Option<Uuid>,
+    pub file_name: String,
+    pub folder_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderInfo {
+    pub id: Uuid,
+    pub library_id: Uuid,
+    /// `None` is the library root.
+    pub parent_id: Option<Uuid>,
+    pub name: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub deleted_at: Option<OffsetDateTime>,
+}
+
+/// Creates a folder with a client-chosen id. A live folder with the same name under the same parent
+/// is returned instead (its id differs), so devices that created it offline end up with one folder.
+#[derive(Debug, Deserialize)]
+pub struct CreateFolderRequest {
+    pub id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub name: String,
+}
+
+/// Field-wise compare-and-swap rename/move, like [`UpdateDocumentMetaRequest`]. Moves into a
+/// missing folder or below the folder itself are ignored.
+#[derive(Debug, Deserialize)]
+pub struct UpdateFolderRequest {
+    pub base_name: String,
+    pub base_parent_id: Option<Uuid>,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChangesResponse {
     /// Document upserts and tombstones (`deleted_at` set), ordered by server sequence.
     pub documents: Vec<DocumentInfo>,
+    /// Folder upserts and tombstones from the same sequence range.
+    #[serde(default)]
+    pub folders: Vec<FolderInfo>,
     /// Opaque cursor for the next request.
     pub cursor: String,
     pub has_more: bool,

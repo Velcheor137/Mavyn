@@ -155,6 +155,28 @@ pub async fn require_document_role(
     }
 }
 
+/// Like [`require_document_role`] for folders.
+pub async fn require_folder_role(
+    db: &PgPool,
+    user: &AuthUser,
+    folder_id: Uuid,
+    min: Role,
+) -> ApiResult<(Uuid, Role)> {
+    let library_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT library_id FROM folders WHERE id = $1")
+            .bind(folder_id)
+            .fetch_optional(db)
+            .await?;
+    let library_id = library_id.ok_or_else(|| ApiError::not_found(codes::FOLDER_NOT_FOUND))?;
+    match require_role(db, user, library_id, min).await {
+        Ok(role) => Ok((library_id, role)),
+        Err(e) if e.code == codes::LIBRARY_NOT_FOUND => {
+            Err(ApiError::not_found(codes::FOLDER_NOT_FOUND))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Fixed-window limiter for authentication attempts, keyed by client IP and by username.
 pub struct RateLimiter {
     window: Duration,

@@ -96,6 +96,29 @@ describe.skipIf(!url)('live sync between two devices', () => {
     await laptop.engine.syncNow();
     expect((await laptop.library.getDocument(note.id)).deletedAt).not.toBeNull();
 
+    // Subfolders, renames and moves are mirrored too.
+    const work = await phone.library.createFolder('Работа', phone.folder.id);
+    const plans = await phone.library.createFolder('Планы', work.id);
+    const plan = await phone.library.createDocument({ text: 'без заголовка', fileName: 'план.md', folderId: plans.id });
+    await phone.engine.syncNow();
+    await laptop.engine.syncNow();
+    expect((await laptop.library.getDocument(plan.id)).folderId).toBe(plans.id);
+    expect((await laptop.library.listFolders()).find((f) => f.id === plans.id)?.parentId).toBe(work.id);
+    await laptop.library.renameFolder(work.id, 'Работа 2026');
+    await laptop.library.moveFolder(plans.id, laptop.folder.id);
+    await laptop.library.updateMeta(plan.id, { fileName: 'итоги.md', folderId: work.id });
+    await laptop.engine.syncNow();
+    await phone.engine.syncNow();
+    const folders = await phone.library.listFolders();
+    expect(folders.find((f) => f.id === work.id)?.name).toBe('Работа 2026');
+    expect(folders.find((f) => f.id === plans.id)?.parentId).toBe(phone.folder.id);
+    expect(await phone.library.getDocument(plan.id)).toMatchObject({ fileName: 'итоги.md', title: 'итоги', folderId: work.id });
+    await phone.library.trashFolder(work.id);
+    await phone.engine.syncNow();
+    await laptop.engine.syncNow();
+    expect((await laptop.library.listFolders()).some((f) => f.id === work.id)).toBe(false);
+    expect((await laptop.library.getDocument(plan.id)).deletedAt).not.toBeNull();
+
     for (const d of [phone, laptop]) {
       expect(d.engine.current.kind).toBe('synced');
       d.engine.stop();

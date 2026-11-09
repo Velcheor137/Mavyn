@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-08. Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
+Last updated: 2026-11-09 (folder sync, see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
 Node 22.23.0, Rust 1.93.1 and WebView2 157.0.4341.42. Earlier Debian/Docker results below
 are inherited platform checks, not reruns on this Windows machine.
 
@@ -124,6 +124,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | Sync, web ↔ real server | Compose stack in the built-in browser: sign in, connect library, pull document, checkbox edit uploaded (server revision by `admin`), server-side edit of the same line → conflict banner, server diff, *keep both* and *keep mine*, sign out keeping copies, re-link without duplicates, sign out removing copies (local-only copy kept, session revoked) | ✅ manual check |
 | Web sign-in gate (2026-11-08) | Fresh compose stack in the built-in browser: anonymous visitor sees only setup/sign-in (no library UI), admin created via the page, per-account IndexedDB, sign-out returns to sign-in, a second account on the same browser sees an empty library | ✅ manual check + `auth.test.tsx` |
 | New document placement (2026-11-08) | Created inside the open folder/tag/favorites; in the synced folder the typed text reached the server | ✅ manual check + `app.test.tsx` |
+| Folder sync (2026-11-09) | `live.test.ts` against a compose server upgraded in place from the 0.1.2 image (migration 0002 on existing data): nested folders, folder rename/move, document rename/move, folder deletion mirrored between two devices; API test `folders_sync_names_locations_and_deletions` | ✅ live run + Rust API test |
 | Sync between devices (2026-11-08) | `live.test.ts` against the real compose server: two independent devices (own database and session) — create, merge of non-overlapping edits, conflict + keep mine, delete; plus browser ↔ second device both directions | ✅ live run |
 | Sync engine | 13 Vitest scenarios on an in-memory server: two devices, merge, conflicts and all resolutions, tombstones, lost responses (create/update), offline, restore on remote edit, re-linking | ✅ passing |
 | Rust crates + server | `cargo test --workspace` (19 tests incl. 10 API integration tests against PostgreSQL 15.13) and `cargo clippy --all-targets -D warnings` in `rust:1.95-bookworm` | ✅ passing |
@@ -152,7 +153,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | 3 Markdown reader | Done: GFM, footnotes, emoji, math, Mermaid (zoom/pan/export SVG), callouts, Shiki, TOC, reading progress, lightbox. Relative local images: placeholder only on web |
 | 4 Editor + tasks | Done: reader/source/split, exact-source checkbox edits, undo/redo across autosave, stale-edit rejection, conflict banner |
 | 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Windows and Android emulator local-storage/SAF UI verified. Missing: physical Android devices/cloud providers and Linux GUI validation |
-| 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, revisions, change feed, search, compose, web sign-in. Missing: folders/attachments endpoints, user/member management UI |
+| 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, folders, revisions, change feed, search, compose, web sign-in. Missing: attachments endpoints, user/member management UI |
 | 7 Sync + offline | Web ↔ server done (one library ↔ one local folder): incremental pull, CAS push, idempotent retries, three-way merge, conflict UI, tombstones, revoked access, sign-out. Missing: desktop/Android sync (bearer token in secure storage), attachments, QR-assisted connection, offline PWA verification |
 | 8 Polish | Partial: Markdown/HTML export and print stylesheet. Missing: PDF beyond print dialog, axe audit, measured performance budgets, Playwright E2E |
 
@@ -161,8 +162,9 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 - Markdown parsing is ~0.5 ms per line on this machine; documents ≥ 64 KB render in a Web Worker,
   but very large files (1–10 MB) were not measured.
 - Search ranks by term frequency without stemming (prefix matching covers most Russian endings).
-- Filename-only rename is local metadata; server-side rename synchronization remains pending.
-- Sync covers document text and file names; folders inside the synced folder, tags and favorites are local only.
+- Sync covers document text, file names, locations and the folder tree below the synced folder;
+  tags and favorites are local only. Moving synced items out of the synced folder keeps their
+  server place; it does not remove them from the server.
 - The web app syncs only with the server it is served from; the dev server can proxy `/api` with `MDR_API_PROXY`.
 
 ## Android delivery and distribution continuation — in progress 2026-11-08
@@ -241,3 +243,22 @@ refresh may replace it. The heading-derived display title is unchanged by rename
   (not a draft) with all four packages and `SHA256SUMS.txt`. All assets have upload state
   `uploaded`; their GitHub SHA-256 digests match the published checksum manifest.
   Physical-device and final Android GUI limitations above still apply.
+
+## Folder sync and wording — 2026-11-09
+
+- Server: `folders` table (migration 0002), `POST /libraries/{id}/folders` (idempotent by id,
+  same name under the same parent returns the existing folder), `PATCH`/`DELETE /folders/{id}`
+  (cycle-safe, subtree deletion with tombstones), `PATCH /documents/{id}` for name/location.
+  Name/location updates are field-wise compare-and-swap; the change feed carries folders on the
+  same cursor. Native sync proxy allows the new routes.
+- Client: the whole subtree of the synced folder is mirrored (ids identical everywhere);
+  concurrent edits of different fields both survive, the same field keeps the first upload;
+  offline twins of a folder are merged; remotely deleted folders keep locally modified or
+  never-uploaded documents outside sync. Copies synced by 0.1.2 upload their subfolder location.
+- A single server library is connected automatically. Folders can be deleted from their menu
+  (not the synced folder itself). New documents get distinct names; renaming a document without
+  a heading updates its list title. Open-file and move/rename dialog wording rewritten (en/ru).
+- Web: the app no longer stays blank when the linked-file handle store's IndexedDB never answers.
+- Verification: Vitest 182 passing / 4 skipped (live test skipped without a server), strict
+  TypeScript; Rust fmt, clippy `-D warnings`, server unit + 11 API tests, native-sync tests in
+  Docker (rust:1.95). Not checked: desktop/Android builds of this change on devices.

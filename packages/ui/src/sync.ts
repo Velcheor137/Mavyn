@@ -195,33 +195,37 @@ export function signIn(username: string, password: string): Promise<void> {
 export async function loadLibraries(): Promise<void> {
   const libraries = await server().api.listLibraries();
   useSync.setState({ libraries });
+  // With a single server library there is nothing to choose: every device mirrors it.
+  if (libraries.length === 1 && !useSync.getState().connection) await connect(libraries[0]!);
 }
 
 /** Starts syncing a server library (existing id or a new one by name) into a local folder of that name. */
 export function connectLibrary(choice: { libraryId: string } | { newName: string }): Promise<void> {
   return run(async () => {
-    const { user } = useSync.getState();
-    if (!user) return;
-    const api = server().api;
-    const library = 'newName' in choice ? await api.createLibrary(choice.newName) : useSync.getState().libraries.find((l) => l.id === choice.libraryId);
-    if (!library) return;
-    const local = services!.library;
-    const folders = await local.listFolders();
-    const folder = folders.find((f) => f.parentId === null && f.name === library.name) ?? (await local.createFolder(library.name));
-    const connection: SyncConnection = {
-      serverId: `${server().baseUrl}|${user.id}`,
-      baseUrl: server().baseUrl,
-      userId: user.id,
-      username: user.username,
-      libraryId: library.id,
-      libraryName: library.name,
-      folderId: folder.id,
-      cursor: '',
-    };
-    await local.putSetting(SYNC_CONNECTION_KEY, connection);
-    await refreshLibrary();
-    startEngine(connection);
+    const library = 'newName' in choice ? await server().api.createLibrary(choice.newName) : useSync.getState().libraries.find((l) => l.id === choice.libraryId);
+    if (library) await connect(library);
   }) as Promise<void>;
+}
+
+async function connect(library: LibraryInfo): Promise<void> {
+  const { user } = useSync.getState();
+  if (!user) return;
+  const local = services!.library;
+  const folders = await local.listFolders();
+  const folder = folders.find((f) => f.parentId === null && f.name === library.name) ?? (await local.createFolder(library.name));
+  const connection: SyncConnection = {
+    serverId: `${server().baseUrl}|${user.id}`,
+    baseUrl: server().baseUrl,
+    userId: user.id,
+    username: user.username,
+    libraryId: library.id,
+    libraryName: library.name,
+    folderId: folder.id,
+    cursor: '',
+  };
+  await local.putSetting(SYNC_CONNECTION_KEY, connection);
+  await refreshLibrary();
+  startEngine(connection);
 }
 
 export function syncNow(): Promise<void> {
@@ -248,6 +252,10 @@ export function signOut(removeCopies: boolean): Promise<void> {
           if (doc.deletedAt === null) await local.trash(doc.id);
           await local.purge(doc.id);
         }
+      }
+      // Folders stay as local folders; signing in again links them to the server by name.
+      for (const folder of await local.listFolders({ includeTrashed: true })) {
+        if (folder.remote?.serverId === connection.serverId) await local.setFolderRemote(folder.id, null);
       }
       await local.putSetting(SYNC_CONNECTION_KEY, null);
     }

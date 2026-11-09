@@ -65,7 +65,12 @@ async function boot(): Promise<void> {
       </StrictMode>,
     );
 
-  const handles = await createHandleStore().catch(() => ({ get: async () => undefined, put: async () => {} }));
+  // Linked-file handles are optional: a browser whose IndexedDB never answers must still show the app.
+  const noHandles = { get: async () => undefined, put: async () => {} };
+  const handles = await Promise.race([
+    createHandleStore().catch(() => noHandles),
+    new Promise<typeof noHandles>((resolve) => setTimeout(() => resolve(noHandles), 3000)),
+  ]);
   const base = {
     platform: new WebPlatformAdapter(handles),
     i18n,

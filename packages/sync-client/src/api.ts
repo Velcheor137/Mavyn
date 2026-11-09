@@ -3,12 +3,16 @@ import {
   PROTOCOL_VERSION,
   type ChangesResponse,
   type CreateDocumentRequest,
+  type CreateFolderRequest,
   type DocumentInfo,
   type DocumentWithContent,
   type ErrorBody,
+  type FolderInfo,
   type LibraryInfo,
   type MeResponse,
   type UpdateContentRequest,
+  type UpdateDocumentMetaRequest,
+  type UpdateFolderRequest,
   type UserInfo,
 } from './protocol.ts';
 
@@ -28,7 +32,13 @@ export interface SyncApi {
   createDocument(libraryId: string, request: CreateDocumentRequest, opId: string): Promise<DocumentInfo>;
   /** Rejects with `SyncHttpError` code `sync.conflict` (details: ConflictDetails) when the base is stale. */
   updateContent(id: string, request: UpdateContentRequest, opId: string): Promise<DocumentInfo>;
+  /** Rename/move; fields whose base is stale keep the server value (see the returned info). */
+  updateDocumentMeta(id: string, request: UpdateDocumentMetaRequest): Promise<DocumentInfo>;
   deleteDocument(id: string): Promise<void>;
+  createFolder(libraryId: string, request: CreateFolderRequest): Promise<FolderInfo>;
+  updateFolder(id: string, request: UpdateFolderRequest): Promise<FolderInfo>;
+  /** Deletes the folder, its subfolders and their documents. */
+  deleteFolder(id: string): Promise<void>;
 }
 
 /** Error returned by the server: HTTP status plus its stable code. */
@@ -52,6 +62,7 @@ const KNOWN: ReadonlySet<string> = new Set<ErrorCode>([
   'request.rate_limited',
   'library.not_found',
   'document.not_found',
+  'folder.not_found',
   'sync.conflict',
   'sync.protocol_unsupported',
   'setup.invalid_token',
@@ -167,8 +178,24 @@ export class HttpSyncApi implements SyncApi {
     return this.request('PUT', `/documents/${encodeURIComponent(id)}/content`, request, opId);
   }
 
+  updateDocumentMeta(id: string, request: UpdateDocumentMetaRequest): Promise<DocumentInfo> {
+    return this.request('PATCH', `/documents/${encodeURIComponent(id)}`, request);
+  }
+
   deleteDocument(id: string): Promise<void> {
     return this.request('DELETE', `/documents/${encodeURIComponent(id)}`);
+  }
+
+  createFolder(libraryId: string, request: CreateFolderRequest): Promise<FolderInfo> {
+    return this.request('POST', `/libraries/${encodeURIComponent(libraryId)}/folders`, request);
+  }
+
+  updateFolder(id: string, request: UpdateFolderRequest): Promise<FolderInfo> {
+    return this.request('PATCH', `/folders/${encodeURIComponent(id)}`, request);
+  }
+
+  deleteFolder(id: string): Promise<void> {
+    return this.request('DELETE', `/folders/${encodeURIComponent(id)}`);
   }
 }
 

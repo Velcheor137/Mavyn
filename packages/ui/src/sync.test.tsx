@@ -56,10 +56,21 @@ describe('sync in the app', () => {
     const services: AppServices = { library, platform, i18n: createI18n('en'), renderMarkdown: async (source, options) => render(source, options), appVersion: 'test', server: { baseUrl: 'https://new.example', api: server.client(), health: async () => true } };
     await initWorkspace(services);
     await initSync(services);
-    expect(useSync.getState().connection).toBeNull();
-    await signIn('tester', 'a long passphrase');
-    expect(useSync.getState().connection).toBeNull();
+    // The only server library is connected afresh, never through the old server's mapping.
+    const connection = useSync.getState().connection;
+    expect(connection?.serverId).toBe('https://new.example|user');
+    expect(connection?.folderId).not.toBe(folder.id);
     expect(useSync.getState().libraries).toHaveLength(1);
+  });
+
+  it('offers a choice when the account has several server libraries', async () => {
+    const server = new FakeServer();
+    server.libraries = [...server.libraries, { id: '0190f0a0-0000-7000-8000-0000000000bb', name: 'Work', role: 'editor' }];
+    const services: AppServices = { library: new Library(new MemoryBackend()), platform, i18n: createI18n('en'), renderMarkdown: async (source, options) => render(source, options), appVersion: 'test', server: { baseUrl: 'https://notes.example', api: server.client(), health: async () => true } };
+    await initWorkspace(services);
+    await initSync(services);
+    expect(useSync.getState().connection).toBeNull();
+    expect(useSync.getState().libraries).toHaveLength(2);
   });
 
   it('signs in, pulls a library, and resolves a conflict by keeping both versions', async () => {
@@ -129,6 +140,7 @@ describe('first run', () => {
   it('asks to create the administrator when the server has no users, then offers a library', async () => {
     const server = new FakeServer();
     server.setupToken = 'one-time-token';
+    server.libraries = [];
     const library = new Library(new MemoryBackend());
     const i18n = createI18n('en');
     const services: AppServices = {

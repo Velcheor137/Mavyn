@@ -19,6 +19,17 @@ export interface Folder {
   name: string;
   createdAt: Iso8601;
   deletedAt: Iso8601 | null;
+  /** Set once the folder exists in a server library (same id there). */
+  remote?: FolderRemote | null;
+}
+
+/** Last name/location known to be identical on the server; local differences are pending. */
+export interface FolderRemote {
+  serverId: string;
+  libraryId: string;
+  baseName: string;
+  /** Server parent; null is the library root. */
+  baseParentId: string | null;
 }
 
 /** Where the authoritative bytes of a document live. */
@@ -67,6 +78,12 @@ export interface RemoteRef {
   baseHash: string | null;
   /** A server version that could not be merged automatically; uploads pause until resolved. */
   conflict: { revisionId: string; hash: string } | null;
+  /**
+   * File name and server folder (null = library root) last known to be identical on the server.
+   * Absent on copies synced before folder sync existed: their server folder was always the root.
+   */
+  baseFileName?: string;
+  baseFolderId?: string | null;
 }
 
 export type RevisionReason = 'import' | 'edit' | 'restore' | 'merge' | 'conflict' | 'sync';

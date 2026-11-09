@@ -705,3 +705,132 @@ async fn rejects_unsupported_protocol_and_path_tricks(pool: PgPool) {
         "original"
     );
 }
+
+#[sqlx::test(migrator = "mdr_server::MIGRATOR")]
+async fn folders_sync_names_locations_and_deletions(pool: PgPool) {
+    let api = Api::new(pool.clone()).await;
+    let admin = api.bootstrap(&pool).await;
+    let lib = api.create_library(&admin, "Tree").await;
+    let patch = |path: String, body: Value| {
+        let api = &api;
+        let admin = admin.clone();
+        async move {
+            api.call(Method::PATCH, &path, Some(&admin), Some(body), &[])
+                .await
+        }
+    };
+    let folder = |name: &str, parent: Option<&str>| json!({ "id": Uuid::now_v7(), "name": name, "parent_id": parent });
+
+    // Create, retry, and a second device creating the same name: one folder.
+    let work_req = folder("Работа", None);
+    let work = api
+        .post(
+            &format!("/libraries/{lib}/folders"),
+            Some(&admin),
+            work_req.clone(),
+        )
+        .await;
+    assert_eq!(work.status, StatusCode::CREATED, "{:?}", work.body);
+    let work_id = work.body["id"].as_str().expect("id").to_owned();
+    let retry = api
+        .post(&format!("/libraries/{lib}/folders"), Some(&admin), work_req)
+        .await;
+    assert_eq!(
+        (retry.status, retry.body["id"].as_str()),
+        (StatusCode::OK, Some(work_id.as_str()))
+    );
+    let twin = api
+        .post(
+            &format!("/libraries/{lib}/folders"),
+            Some(&admin),
+            folder("работа", None),
+        )
+        .await;
+    assert_eq!(
+        (twin.status, twin.body["id"].as_str()),
+        (StatusCode::OK, Some(work_id.as_str()))
+    );
+    let plans = api
+        .post(
+            &format!("/libraries/{lib}/folders"),
+            Some(&admin),
+            folder("Plans", Some(&work_id)),
+        )
+        .await;
+    let plans_id = plans.body["id"].as_str().expect("id").to_owned();
+
+    // Documents can be created in a folder, renamed and moved with compare-and-swap per field.
+    let doc_id = Uuid::now_v7().to_string();
+    let r = api.post(&format!("/libraries/{lib}/documents"), Some(&admin), json!({ "id": doc_id, "file_name": "draft.md", "content": "no heading", "folder_id": plans_id })).await;
+    assert_eq!(r.body["folder_id"], plans_id.as_str());
+    let r = patch(format!("/documents/{doc_id}"), json!({ "base_file_name": "draft.md", "base_folder_id": plans_id, "file_name": "final.md", "folder_id": work_id })).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (
+            r.body["file_name"].as_str(),
+            r.body["folder_id"].as_str(),
+            r.body["title"].as_str()
+        ),
+        (Some("final.md"), Some(work_id.as_str()), Some("final"))
+    );
+    // A stale base leaves that field as the server has it.
+    let r = patch(format!("/documents/{doc_id}"), json!({ "base_file_name": "draft.md", "base_folder_id": plans_id, "file_name": "other.md", "folder_id": null })).await;
+    assert_eq!(
+        (r.body["file_name"].as_str(), r.body["folder_id"].as_str()),
+        (Some("final.md"), Some(work_id.as_str()))
+    );
+
+    // Moving a folder below its own descendant is ignored.
+    let r = patch(format!("/folders/{work_id}"), json!({ "base_name": "Работа", "base_parent_id": null, "name": "Work", "parent_id": plans_id })).await;
+    assert_eq!(
+        (r.body["name"].as_str(), r.body["parent_id"].is_null()),
+        (Some("Work"), true)
+    );
+
+    // The feed reports folders and documents from one cursor.
+    let feed = api
+        .get(&format!("/libraries/{lib}/changes"), &admin)
+        .await
+        .body;
+    assert_eq!(feed["folders"].as_array().expect("folders").len(), 2);
+    assert_eq!(feed["documents"].as_array().expect("docs").len(), 1);
+    let cursor = feed["cursor"].as_str().expect("cursor").to_owned();
+    let page = api
+        .get(&format!("/libraries/{lib}/changes?limit=1"), &admin)
+        .await
+        .body;
+    assert_eq!(page["has_more"], true);
+    assert_eq!(
+        page["folders"].as_array().expect("folders").len()
+            + page["documents"].as_array().expect("docs").len(),
+        1
+    );
+
+    // Deleting a folder deletes its subtree and the documents in it.
+    let r = api
+        .call(
+            Method::DELETE,
+            &format!("/folders/{work_id}"),
+            Some(&admin),
+            None,
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let after = api
+        .get(&format!("/libraries/{lib}/changes?cursor={cursor}"), &admin)
+        .await
+        .body;
+    let folders = after["folders"].as_array().expect("folders");
+    assert_eq!(folders.len(), 2);
+    assert!(folders.iter().all(|f| f["deleted_at"].is_string()));
+    assert!(after["documents"][0]["deleted_at"].is_string());
+
+    // Folders of other libraries are invisible.
+    let other = api.create_user(&admin, "other").await;
+    let r = api.call(Method::PATCH, &format!("/folders/{plans_id}"), Some(&other), Some(json!({ "base_name": "Plans", "base_parent_id": null, "name": "x", "parent_id": null })), &[]).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::NOT_FOUND, "folder.not_found")
+    );
+}

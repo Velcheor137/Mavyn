@@ -351,3 +351,163 @@ describe('helpers', () => {
     expect(backoffDelay(5, () => 0)).toBe(0);
   });
 });
+
+describe('SyncEngine folders', () => {
+  const tree = async (d: Awaited<ReturnType<typeof device>>) => {
+    const folders = await d.library.listFolders();
+    const path = (id: string | null): string => {
+      if (id === d.folder.id) return '';
+      const f = folders.find((x) => x.id === id);
+      return f ? `${path(f.parentId)}/${f.name}` : '?';
+    };
+    const docs = (await d.library.listDocuments()).map((doc) => `${path(doc.folderId)}/${doc.fileName}`);
+    const dirs = folders.filter((f) => f.id !== d.folder.id).map((f) => path(f.id) + '/');
+    return [...dirs, ...docs].sort();
+  };
+
+  it('mirrors nested folders and the documents in them on every device', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const work = await a.library.createFolder('Работа', a.folder.id);
+    const plans = await a.library.createFolder('Планы', work.id);
+    await a.library.createDocument({ text: '# Q1\n', fileName: 'q1.md', folderId: plans.id });
+    await a.library.createDocument({ text: 'root', fileName: 'root.md', folderId: a.folder.id });
+    await a.engine.syncNow();
+    expect(a.engine.current.kind).toBe('synced');
+    await b.engine.syncNow();
+    expect(await tree(b)).toEqual(['/root.md', '/Работа/', '/Работа/Планы/', '/Работа/Планы/q1.md']);
+    expect(b.engine.current.kind).toBe('synced');
+    // Same ids everywhere.
+    expect((await b.library.listFolders()).map((f) => f.id)).toContain(plans.id);
+  });
+
+  it('syncs renames and moves of folders and documents in both directions', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const one = await a.library.createFolder('One', a.folder.id);
+    const two = await a.library.createFolder('Two', a.folder.id);
+    const doc = await a.library.createDocument({ text: 'no heading', fileName: 'draft.md', folderId: one.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+
+    await b.library.renameFolder(one.id, 'Первая');
+    await b.library.moveFolder(two.id, one.id);
+    await b.library.updateMeta(doc.id, { fileName: 'final.md', folderId: two.id });
+    await b.engine.syncNow();
+    expect(b.engine.current.kind).toBe('synced');
+    await a.engine.syncNow();
+    expect(await tree(a)).toEqual(['/Первая/', '/Первая/Two/', '/Первая/Two/final.md']);
+    expect((await a.library.getDocument(doc.id)).title).toBe('final');
+    expect(a.reloaded).toContain(doc.id);
+
+    await a.library.updateMeta(doc.id, { folderId: a.folder.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    expect(await tree(b)).toEqual(['/final.md', '/Первая/', '/Первая/Two/']);
+  });
+
+  it('keeps both sides of concurrent changes to different fields, and the first upload for the same field', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const target = await a.library.createFolder('Target', a.folder.id);
+    const doc = await a.library.createDocument({ text: 'x', fileName: 'x.md', folderId: a.folder.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+
+    await a.library.updateMeta(doc.id, { fileName: 'renamed-on-a.md' });
+    await b.library.updateMeta(doc.id, { folderId: target.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    await a.engine.syncNow();
+    for (const d of [a, b]) expect(await tree(d)).toEqual(['/Target/', '/Target/renamed-on-a.md']);
+
+    await a.library.updateMeta(doc.id, { fileName: 'a.md' });
+    await b.library.updateMeta(doc.id, { fileName: 'b.md' });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    await a.engine.syncNow();
+    for (const d of [a, b]) expect((await d.library.getDocument(doc.id)).fileName).toBe('a.md');
+    for (const d of [a, b]) expect(d.engine.current.kind).toBe('synced');
+  });
+
+  it('merges a folder created on two devices before they synced', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const fromA = await a.library.createFolder('Notes', a.folder.id);
+    const fromB = await b.library.createFolder('notes', b.folder.id);
+    await a.library.createDocument({ text: 'a', fileName: 'a.md', folderId: fromA.id });
+    await b.library.createDocument({ text: 'b', fileName: 'b.md', folderId: fromB.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    await a.engine.syncNow();
+    expect(server.folders.size).toBe(1);
+    for (const d of [a, b]) expect(await tree(d)).toEqual(['/Notes/', '/Notes/a.md', '/Notes/b.md']);
+    expect((await b.library.listFolders({ includeTrashed: true })).some((f) => f.id === fromB.id)).toBe(false);
+  });
+
+  it('deletes a folder everywhere but keeps documents that were modified on another device', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const old = await a.library.createFolder('Old', a.folder.id);
+    const inner = await a.library.createFolder('Inner', old.id);
+    const clean = await a.library.createDocument({ text: 'clean', fileName: 'clean.md', folderId: inner.id });
+    const edited = await a.library.createDocument({ text: 'edited', fileName: 'edited.md', folderId: old.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+
+    await b.edit(edited.id, 'edited on b');
+    await a.library.trashFolder(old.id);
+    await a.engine.syncNow();
+    expect([...server.folders.values()].every((f) => f.deleted_at)).toBe(true);
+    await b.engine.syncNow();
+    expect(await b.library.listFolders()).toEqual([expect.objectContaining({ id: b.folder.id })]);
+    expect((await b.library.getDocument(clean.id)).deletedAt).not.toBeNull();
+    const kept = await b.library.getDocument(edited.id);
+    expect(kept.deletedAt).toBeNull();
+    expect(kept.folderId).toBeNull();
+    expect(await b.text(edited.id)).toBe('edited on b');
+    expect(b.engine.current.kind).toBe('synced');
+  });
+
+  it('never creates a cycle when two devices nest two folders into each other', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const x = await a.library.createFolder('X', a.folder.id);
+    const y = await a.library.createFolder('Y', a.folder.id);
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    await a.library.moveFolder(x.id, y.id);
+    await b.library.moveFolder(y.id, x.id);
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    await a.engine.syncNow();
+    for (const d of [a, b]) expect(await tree(d)).toEqual(['/Y/', '/Y/X/']);
+  });
+
+  it('uploads the subfolder of a copy synced before folder sync existed', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const doc = await a.library.createDocument({ text: 'legacy', fileName: 'legacy.md', folderId: a.folder.id });
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    // As written by the previous version: no name/location base, document organised locally.
+    const sub = await a.library.createFolder('Archive', a.folder.id);
+    const { baseFileName: _n, baseFolderId: _f, ...legacy } = (await a.library.getDocument(doc.id)).remote!;
+    await a.library.updateMeta(doc.id, { folderId: sub.id, remote: legacy });
+    for (const d of [b]) {
+      const { baseFileName: _bn, baseFolderId: _bf, ...old } = (await d.library.getDocument(doc.id)).remote!;
+      await d.library.updateMeta(doc.id, { remote: old });
+    }
+    await b.engine.syncNow();
+    await a.engine.syncNow();
+    await b.engine.syncNow();
+    for (const d of [a, b]) expect(await tree(d)).toEqual(['/Archive/', '/Archive/legacy.md']);
+  });
+});

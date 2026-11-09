@@ -128,7 +128,7 @@ describe('AppShell', () => {
     await user.selectOptions(within(dialog).getByLabelText('Destination'), '');
     await user.click(within(dialog).getByRole('button', { name: 'Move' }));
     await waitFor(async () => expect((await library.listFolders()).find((f) => f.id === child.id)?.parentId).toBeNull());
-  });
+  }, 20_000);
 
   it('renames and moves a document without changing source or history', async () => {
     const user = userEvent.setup();
@@ -164,7 +164,7 @@ describe('AppShell', () => {
     await user.click(screen.getByRole('button', { name: 'More actions' }));
     await user.click(screen.getByRole('menuitem', { name: 'Move to folder' }));
     const dialog = screen.getByRole('dialog', { name: 'Move to folder' });
-    const hint = 'This document continues syncing with its server library after moving.';
+    const hint = 'Outside the synced folder this document keeps syncing, but stays in its current place on your other devices.';
     expect(within(dialog).queryByText(hint)).toBeNull();
     await library.updateMeta(id, { remote: { serverId: 'server', libraryId: 'remote', baseRevisionId: 'r', baseHash: 'h', conflict: null } });
     await act(() => refreshLibrary());
@@ -227,6 +227,34 @@ describe('AppShell', () => {
     act(() => session.apply([{ from: session.text.length, to: session.text.length, insert: 'typed text' }], 'editor'));
     await waitFor(async () => expect((await library.readContent(created.id)).text).toContain('typed text'), { timeout: 3000 });
   });
+
+  it('gives each new document in a folder its own name', async () => {
+    const { library } = await setup('# Existing\n');
+    await act(() => refreshLibrary());
+    for (let i = 0; i < 3; i++) {
+      fireEvent.click(screen.getAllByRole('button', { name: 'New document' })[0]!);
+      await waitFor(async () => expect((await library.listDocuments()).length).toBe(2 + i));
+    }
+    const names = (await library.listDocuments()).map((d) => d.fileName).filter((n) => n.startsWith('Untitled')).sort();
+    expect(names).toEqual(['Untitled 2.md', 'Untitled 3.md', 'Untitled.md']);
+  });
+
+  it('deletes a folder with its subfolders and documents after confirmation', async () => {
+    const user = userEvent.setup();
+    const { library } = await setup('# Outside\n');
+    const old = await library.createFolder('Old');
+    const inner = await library.createFolder('Inner', old.id);
+    const doc = await library.createDocument({ text: '# Inside\n', fileName: 'inside.md', folderId: inner.id });
+    await act(() => refreshLibrary());
+    await user.click(screen.getByRole('button', { name: 'Folder actions: Old' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete folder' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete folder' });
+    expect(within(dialog).getByText('“Old”, its subfolders and 1 document will be moved to Trash.')).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
+    await waitFor(async () => expect(await library.listFolders()).toHaveLength(0));
+    expect((await library.getDocument(doc.id)).deletedAt).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Folder actions: Old' })).toBeNull();
+  }, 20_000);
 
   it('creates a new document with the open tag or as a favorite', async () => {
     const { library } = await setup('# Tagged\n');

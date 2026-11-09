@@ -8,6 +8,7 @@ import {
   type DocumentMeta,
   type DocumentSource,
   type Folder,
+  type FolderRemote,
   type RemoteRef,
   type Revision,
   type RevisionReason,
@@ -202,11 +203,16 @@ export class Library {
   }
 
   async updateMeta(id: string, patch: MetaPatch): Promise<DocumentMeta> {
-    const next = await this.backend.transaction(['documents', 'folders'], 'readwrite', async (tx) => {
+    const next = await this.backend.transaction(['documents', 'folders', 'contents'], 'readwrite', async (tx) => {
       const meta = await tx.get<DocumentMeta>('documents', id);
       if (!meta) throw new AppError('document.not_found', { id });
       if (patch.folderId !== undefined) await this.requireFolder(tx, patch.folderId);
       const next: DocumentMeta = { ...meta, ...patch, tags: patch.tags ? normalizeTags(patch.tags) : meta.tags };
+      if (patch.fileName !== undefined && patch.title === undefined && patch.fileName !== meta.fileName) {
+        // Without a heading the file name is the title, so a rename must show up in the list.
+        const content = await tx.get<ContentRow>('contents', meta.contentHash);
+        next.title = deriveTitle(content?.text ?? '', patch.fileName) || patch.fileName;
+      }
       if (patch.title !== undefined || patch.fileName !== undefined || patch.folderId !== undefined || patch.tags !== undefined) {
         next.updatedAt = this.iso();
       }
@@ -346,9 +352,9 @@ export class Library {
     return this.saveContent(id, text, version, 'restore');
   }
 
-  async listFolders(): Promise<Folder[]> {
+  async listFolders(options: { includeTrashed?: boolean } = {}): Promise<Folder[]> {
     const folders = await this.backend.transaction(['folders'], 'readonly', (tx) => tx.getAll<Folder>('folders'));
-    return folders.filter((f) => f.deletedAt === null);
+    return folders.filter((f) => options.includeTrashed || f.deletedAt === null);
   }
 
   async createFolder(name: string, parentId: string | null = null): Promise<Folder> {
@@ -357,6 +363,7 @@ export class Library {
       await this.validateFolder(tx, folder);
       await tx.put('folders', folder);
     });
+    this.emit();
     return folder;
   }
 
@@ -367,6 +374,50 @@ export class Library {
       await this.validateFolder(tx, next);
       await tx.put('folders', next);
     });
+    this.emit();
+  }
+
+  /**
+   * Writes a folder as the server has it (sync). Unlike user edits, a duplicate sibling name is
+   * accepted: two devices may have created the same name concurrently. A deleted folder is restored.
+   */
+  async putSyncedFolder(input: { id: string; parentId: string | null; name: string; remote: FolderRemote }): Promise<void> {
+    await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
+      await this.requireFolder(tx, input.parentId);
+      const existing = await tx.get<Folder>('folders', input.id);
+      const folder: Folder = existing
+        ? { ...existing, parentId: input.parentId, name: input.name, remote: input.remote, deletedAt: null }
+        : { id: input.id, libraryId: this.libraryId, parentId: input.parentId, name: input.name, createdAt: this.iso(), deletedAt: null, remote: input.remote };
+      await tx.put('folders', folder);
+    });
+    this.emit();
+  }
+
+  /** Sync bookkeeping only: what the server has for this folder (also for trashed folders). */
+  async setFolderRemote(id: string, remote: FolderRemote | null): Promise<void> {
+    await this.backend.transaction(['folders'], 'readwrite', async (tx) => {
+      const folder = await tx.get<Folder>('folders', id);
+      if (folder) await tx.put('folders', { ...folder, remote });
+    });
+  }
+
+  /**
+   * Gives a folder the id the server uses for it (the server already had a folder with this name
+   * there). Subfolders and documents move along; if `newId` exists locally the two are merged.
+   */
+  async rekeyFolder(oldId: string, newId: string, remote: FolderRemote): Promise<void> {
+    const moved = await this.backend.transaction(['folders', 'documents'], 'readwrite', async (tx) => {
+      const old = await tx.get<Folder>('folders', oldId);
+      if (!old) throw new AppError('folder.not_found', { id: oldId });
+      const target = await tx.get<Folder>('folders', newId);
+      await tx.put('folders', { ...(target ?? old), id: newId, parentId: old.parentId, name: remote.baseName, deletedAt: null, remote });
+      for (const f of await tx.getAll<Folder>('folders')) if (f.parentId === oldId) await tx.put('folders', { ...f, parentId: newId });
+      const docs = (await tx.getAll<DocumentMeta>('documents')).filter((d) => d.folderId === oldId);
+      for (const d of docs) await tx.put('documents', { ...d, folderId: newId });
+      await tx.delete('folders', oldId);
+      return docs.map((d) => d.id);
+    });
+    this.emit(...moved);
   }
 
   /** Moves a folder; refuses to create cycles. */
@@ -384,6 +435,7 @@ export class Library {
       await this.validateFolder(tx, next);
       await tx.put('folders', next);
     });
+    this.emit();
   }
 
   /** Trashes a folder and everything below it. */
