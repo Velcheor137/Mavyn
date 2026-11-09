@@ -21,3 +21,8 @@ apps/desktop/src-tauri/target/
 *.jks
 *.p12
 keystore.properties
+# README assets must remain visible even when docs/ is ignored globally.
+!docs/
+!docs/images/
+!docs/images/mavyn.png
+!docs/getting-started.ru.md
