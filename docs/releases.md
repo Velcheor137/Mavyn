@@ -8,8 +8,10 @@ Actions are pinned to immutable commits. No `pull_request_target` or PR signing 
 Manual dispatch of **Release** builds and verifies the complete installer/APK/checksum set
 as Actions artifacts without creating or publishing a GitHub Release or container image.
 Only a pushed version tag can reach the publishing job. CI and release validation have separate
-concurrency groups. Android CI uses the runner's installed Gradle 9.8.2 with an explicit version
-guard; local builds retain the checksum-pinned 9.6.1 wrapper or an explicit `MAVYN_GRADLE_BIN`.
+concurrency groups. Android CI runs Gradle 9.8.2 (`scripts/ci-gradle.sh`): the runner's
+preinstalled Gradle when it is exactly that version, otherwise the official distribution, downloaded
+and verified against its pinned SHA-256, so runner image updates cannot break the build; local
+builds retain the checksum-pinned 9.6.1 wrapper or an explicit `MAVYN_GRADLE_BIN`.
 The small Android `buildSrc` bridge uses Java, so it does not fetch a second Kotlin compiler
 for Gradle's Kotlin DSL. Application/plugin Kotlin remains at 2.2.10. Windows prepares the
 exact NSIS/Tauri utility versions expected by the locked CLI using GitHub's asset API, checking
