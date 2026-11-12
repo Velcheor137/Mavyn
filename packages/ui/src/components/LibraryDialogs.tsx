@@ -3,7 +3,7 @@ import { useTranslation } from '@mdr/i18n';
 import { useId, useState, type FormEvent } from 'react';
 import { useServices } from '../services.tsx';
 import { useSync } from '../sync.ts';
-import { refreshLibrary, useWorkspace } from '../workspace.ts';
+import { refreshLibrary, setSection, useWorkspace } from '../workspace.ts';
 import { descendantIds, folderPaths } from './folders.ts';
 import { Field, Modal } from './primitives.tsx';
 
@@ -51,7 +51,7 @@ export function LibraryDialog({ action, onClose }: { action: LibraryAction; onCl
       switch (action.kind) {
         case 'createFolder': {
           const folder = await library.createFolder(name, parentId);
-          useWorkspace.setState({ section: { kind: 'folder', folderId: folder.id } });
+          setSection({ kind: 'folder', folderId: folder.id });
           break;
         }
         case 'renameFolder': await library.renameFolder(action.folder.id, name); break;
@@ -59,7 +59,7 @@ export function LibraryDialog({ action, onClose }: { action: LibraryAction; onCl
         case 'deleteFolder': {
           await library.trashFolder(action.folder.id);
           const { section } = useWorkspace.getState();
-          if (section.kind === 'folder' && deletedIds.has(section.folderId)) useWorkspace.setState({ section: { kind: 'all' } });
+          if (section.kind === 'folder' && deletedIds.has(section.folderId)) setSection({ kind: 'all' });
           break;
         }
         case 'renameDocument': await library.updateMeta(action.document.id, { fileName: name.trim() }); break;

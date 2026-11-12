@@ -1,10 +1,21 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { defineConfig, type Plugin } from 'vite';
 import { THEME_BOOTSTRAP_SCRIPT } from '../../packages/ui/src/theme-bootstrap.ts';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+
+/**
+ * Large documents render in a Web Worker, which has no DOM. Two Markdown dependencies pick a
+ * DOM-based build for browsers (`DOMParser` for KaTeX output, `document` for HTML entities), so the
+ * worker crashed and big files never rendered. Every bundle uses their DOM-free builds instead.
+ */
+const resolveNode = createRequire(import.meta.url).resolve;
+const domFree = Object.fromEntries(
+  ['hast-util-from-html-isomorphic', 'decode-named-character-reference'].map((name) => [name, resolveNode(name)]),
+);
 
 function apiProxy() {
   const target = process.env.MDR_API_PROXY;
@@ -30,6 +41,7 @@ function themeBootstrap(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), themeBootstrap()],
   define: { __APP_VERSION__: JSON.stringify(version) },
+  resolve: { alias: domFree },
   worker: { format: 'es' },
   build: {
     target: 'es2022',

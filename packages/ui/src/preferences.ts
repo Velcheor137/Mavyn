@@ -36,6 +36,8 @@ export interface WorkspaceSnapshot {
   viewModes: Record<string, ViewMode>;
   /** Reading position per document as a scroll fraction 0..1. */
   positions: Record<string, number>;
+  /** Sidebar section that was open (validated against the library on load). */
+  section?: unknown;
 }
 
 export const ACCENTS = ['#5e6ad2', '#0e8a6a', '#d9480f', '#c2255c', '#1c7ed6', '#7048e8', '#495057'] as const;
@@ -139,6 +141,7 @@ export function loadWorkspaceSnapshot(): WorkspaceSnapshot {
     active: typeof raw?.active === 'string' ? raw.active : null,
     viewModes: raw?.viewModes && typeof raw.viewModes === 'object' ? raw.viewModes : {},
     positions: raw?.positions && typeof raw.positions === 'object' ? raw.positions : {},
+    section: raw?.section && typeof raw.section === 'object' ? raw.section : null,
   };
 }
 

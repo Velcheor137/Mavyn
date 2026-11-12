@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-09 (folder sync, see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
+Last updated: 2026-11-12 (large documents, file placement; see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
 Node 22.23.0, Rust 1.93.1 and WebView2 157.0.4341.42. Earlier Debian/Docker results below
 are inherited platform checks, not reruns on this Windows machine.
 
@@ -262,3 +262,20 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 - Verification: Vitest 182 passing / 4 skipped (live test skipped without a server), strict
   TypeScript; Rust fmt, clippy `-D warnings`, server unit + 11 API tests, native-sync tests in
   Docker (rust:1.95). Not checked: desktop/Android builds of this change on devices.
+
+## Large documents and file placement — 2026-11-12
+
+- Fixed: documents of about 64 KB and more (≈1000+ lines) never rendered in the web app. They
+  render in a Web Worker, and two Markdown dependencies (`hast-util-from-html-isomorphic`,
+  `decode-named-character-reference`) used their DOM builds there (`DOMParser`, `document`), so
+  the worker crashed and the reader stayed on "Loading…". The web build now aliases them to their
+  DOM-free builds; the production worker bundle contains neither call. The renderer also falls
+  back to the main thread if a worker fails, and the reader shows an error banner instead of an
+  endless spinner. Verified in the browser with a 5,500-line document (rendered in the worker).
+- Opened and dropped files go into the folder/tag being viewed (like new documents), with a
+  confirmation naming the folder; the list heading names the current folder; the open section
+  is remembered across restarts.
+- Document toolbar: Download (.md) and Move to trash buttons; trashing offers Undo.
+- Alt+N creates a document; renaming updates search titles.
+- Verification: Vitest 186 passing / 4 skipped, strict TypeScript, web production build;
+  manual check in the built-in browser. Desktop/Android builds not run on devices.

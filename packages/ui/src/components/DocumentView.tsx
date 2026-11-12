@@ -1,12 +1,13 @@
-import { AppError, toAppError, type DocumentSession } from '@mdr/core';
+import { AppError, encodeUtf8, toAppError, type DocumentSession } from '@mdr/core';
 import { createMarkdownEditor, type FormatCommand, type MarkdownEditor } from '@mdr/editor';
 import { useTranslation } from '@mdr/i18n';
 import { toggleTask } from '@mdr/markdown-engine';
-import { AlertTriangle, BookOpen, Code2, Columns2, History, Redo2, Undo2 } from 'lucide-react';
+import { AlertTriangle, BookOpen, Code2, Columns2, Download, History, Redo2, Trash2, Undo2 } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useRendered, useSession } from '../hooks.ts';
 import { usePreferences, type ViewMode } from '../preferences.ts';
-import { notify, notifyError, reloadDocument, saveAsCopy, setReadingPosition, setViewMode, useWorkspace } from '../workspace.ts';
+import { useServices } from '../services.tsx';
+import { notify, notifyError, reloadDocument, saveAsCopy, setReadingPosition, setViewMode, trashDocument, useWorkspace } from '../workspace.ts';
 import { DocumentMenu } from './DocumentMenu.tsx';
 import { EditorToolbar } from './EditorToolbar.tsx';
 import { ImageLightbox } from './ImageLightbox.tsx';
@@ -20,6 +21,7 @@ export function DocumentView({ id, onShowHistory, outlineToggle }: { id: string;
   const defaultMode = usePreferences((p) => p.defaultViewMode);
   const mode = useWorkspace((s) => s.viewModes[id]) ?? defaultMode;
   const meta = useWorkspace((s) => s.documents.find((d) => d.id === id));
+  const { platform } = useServices();
 
   if (!session || !meta) {
     return <div className="flex-1 grid place-items-center muted">{t('app.loading')}</div>;
@@ -39,6 +41,18 @@ export function DocumentView({ id, onShowHistory, outlineToggle }: { id: string;
           </button>
           <button type="button" className="icon-button" onClick={onShowHistory} aria-label={t('document.history')} title={t('document.history')}>
             <History size={16} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => void platform.saveAs(meta.fileName || 'document.md', encodeUtf8({ text: session.text, bom: meta.bom }), 'text/markdown;charset=utf-8').catch(notifyError)}
+            aria-label={t('document.download')}
+            title={t('document.download')}
+          >
+            <Download size={16} aria-hidden />
+          </button>
+          <button type="button" className="icon-button icon-button-danger" onClick={() => void trashDocument(id).catch(notifyError)} aria-label={t('document.moveToTrash')} title={t('document.moveToTrash')}>
+            <Trash2 size={16} aria-hidden />
           </button>
           <DocumentMenu meta={meta} session={session} />
           {outlineToggle}
@@ -96,7 +110,7 @@ function DocumentPanes({ id, session, mode }: { id: string; session: DocumentSes
   const { t } = useTranslation();
   const showReader = mode !== 'source';
   const showEditor = mode !== 'reader';
-  const { result } = useRendered(showReader ? session.text : undefined, mode === 'split' ? 150 : 0);
+  const { result, error } = useRendered(showReader ? session.text : undefined, mode === 'split' ? 150 : 0);
   const readerRef = useRef<HTMLDivElement>(null);
   const editorHost = useRef<HTMLDivElement>(null);
   const editor = useRef<MarkdownEditor | null>(null);
@@ -214,10 +228,24 @@ function DocumentPanes({ id, session, mode }: { id: string; session: DocumentSes
         <section ref={readerRef} className="reader-pane" onScroll={onReaderScroll} onDoubleClick={onReaderDoubleClick} tabIndex={-1} data-reader-scroll="">
           <div className="reader-progress" aria-hidden />
           <article className="reader-content">
+            {error !== null && (
+              <div className="banner banner-warning render-error" role="alert">
+                <AlertTriangle size={16} aria-hidden className="shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <strong>{t('document.renderFailed')}</strong>
+                  <p>{t(result ? 'document.renderStale' : 'document.renderFailedHint')}</p>
+                </div>
+                {mode === 'reader' && (
+                  <button type="button" className="button" onClick={() => setViewMode(id, 'source')}>
+                    {t('document.source')}
+                  </button>
+                )}
+              </div>
+            )}
             {result ? (
               <MarkdownView result={result} overrides={overrides} onToggleTask={onToggleTask} onOpenImage={setLightbox} onInternalLink={onInternalLink} />
             ) : (
-              <p className="muted">{t('app.loading')}</p>
+              error === null && <p className="muted">{t('app.loading')}</p>
             )}
           </article>
         </section>

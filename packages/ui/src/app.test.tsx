@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render as renderDom, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
-import { refreshLibrary } from './workspace.ts';
+import { addFiles, refreshLibrary } from './workspace.ts';
 import { createI18n, I18nextProvider } from '@mdr/i18n';
 import { AppError } from '@mdr/core';
 import { render } from '@mdr/markdown-engine';
@@ -255,6 +255,39 @@ describe('AppShell', () => {
     expect((await library.getDocument(doc.id)).deletedAt).not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Folder actions: Old' })).toBeNull();
   }, 20_000);
+
+  it('adds opened files to the folder being viewed and says so', async () => {
+    const { library } = await setup('# Existing\n');
+    const folder = await library.createFolder('Work');
+    await act(() => refreshLibrary());
+    fireEvent.click(await screen.findByRole('button', { name: /^Work/ }));
+    await act(async () => {
+      await addFiles([{ name: 'notes.md', bytes: new TextEncoder().encode('# Notes\n'), locator: null, fingerprint: null }]);
+    });
+    const added = (await library.listDocuments()).find((d) => d.fileName === 'notes.md')!;
+    expect(added.folderId).toBe(folder.id);
+    expect(await screen.findByText('File added to “Work”')).toBeInTheDocument();
+    const list = screen.getAllByRole('list').find((l) => l.classList.contains('doc-list'))!;
+    expect(within(list).getByText('Notes')).toBeInTheDocument();
+  });
+
+  it('downloads and trashes the open document from the toolbar, with undo', async () => {
+    const saveAs = vi.spyOn(platform, 'saveAs');
+    const { library, id } = await setup('# Report\n');
+    fireEvent.click(screen.getByRole('button', { name: 'Download (.md)' }));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+    const [name, bytes, mime] = saveAs.mock.calls[0]!;
+    expect([name, mime]).toEqual(['todo.md', 'text/markdown;charset=utf-8']);
+    expect(new TextDecoder().decode(bytes)).toBe('# Report\n');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move to trash' }));
+    const toast = await screen.findByText('“Report” moved to Trash');
+    expect((await library.getDocument(id)).deletedAt).not.toBeNull();
+    fireEvent.click(within(toast.closest('.toast') as HTMLElement).getByRole('button', { name: 'Undo' }));
+    await waitFor(async () => expect((await library.getDocument(id)).deletedAt).toBeNull());
+    expect(await screen.findByRole('tab', { name: /Report/ })).toBeInTheDocument();
+    saveAs.mockRestore();
+  });
 
   it('creates a new document with the open tag or as a favorite', async () => {
     const { library } = await setup('# Tagged\n');

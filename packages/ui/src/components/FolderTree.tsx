@@ -4,7 +4,7 @@ import * as Menu from '@radix-ui/react-dropdown-menu';
 import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, FolderInput, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { useSync } from '../sync.ts';
 import { useState } from 'react';
-import { useWorkspace } from '../workspace.ts';
+import { setSection, useWorkspace } from '../workspace.ts';
 import type { LibraryAction } from './LibraryDialogs.tsx';
 
 export function FolderTree({ folders, documents, onAction }: { folders: Folder[]; documents: DocumentMeta[]; onAction(action: LibraryAction): void }) {
@@ -38,7 +38,7 @@ export function FolderTree({ folders, documents, onAction }: { folders: Folder[]
             {hasChildren ? <button type="button" className="icon-button small" aria-expanded={expanded} aria-label={t(expanded ? 'folders.collapse' : 'folders.expand', { name: folder.name })} onClick={() => toggle(folder.id)}>
               {expanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
             </button> : <span className="folder-toggle-spacer" />}
-            <button type="button" className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={() => useWorkspace.setState({ section: { kind: 'folder', folderId: folder.id } })}>
+            <button type="button" className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={() => setSection({ kind: 'folder', folderId: folder.id })}>
               <FolderOpen size={15} aria-hidden /><span className="truncate">{folder.name}</span>
               <span className="nav-count">{documents.filter((doc) => doc.folderId === folder.id).length}</span>
             </button>

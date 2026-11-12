@@ -6,7 +6,7 @@ import { useRelativeTime } from '../hooks.ts';
 import { SyncStatus } from './SyncStatus.tsx';
 import { FolderTree } from './FolderTree.tsx';
 import { LibraryDialog, type LibraryAction } from './LibraryDialogs.tsx';
-import { openDocument, purgeDocument, restoreDocument, search, useWorkspace, notifyError, type Section } from '../workspace.ts';
+import { openDocument, purgeDocument, restoreDocument, search, setSection, useWorkspace, notifyError, type Section } from '../workspace.ts';
 
 export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDocument(): void; onOpenFile(): void; onOpenSettings(): void }) {
   const { t, i18n } = useTranslation();
@@ -52,11 +52,11 @@ export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDo
     return dupes;
   }, [visible]);
 
-  const setSection = (next: Section) => useWorkspace.setState({ section: next });
   const isSection = (kind: Section['kind'], key?: string) =>
     section.kind === kind && (key === undefined || (section.kind === 'tag' && section.tag === key) || (section.kind === 'folder' && section.folderId === key));
 
   const byId = new Map(documents.map((d) => [d.id, d]));
+  const place = section.kind === 'folder' ? folders.find((f) => f.id === section.folderId)?.name : section.kind === 'tag' ? `#${section.tag}` : undefined;
 
   return (
     <nav className="sidebar" aria-label={t('a11y.mainNavigation')}>
@@ -134,8 +134,12 @@ export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDo
             </>
           )}
 
-          <p className="sidebar-heading">{t('sidebar.documentsCount', { count: visible.length })}</p>
-          {visible.length === 0 && <p className="sidebar-empty">{t('sidebar.noDocuments')}</p>}
+          {/* Names the place new and opened documents go to. */}
+          <p className="sidebar-heading">
+            {place ? `${place} · ` : ''}
+            {t('sidebar.documentsCount', { count: visible.length })}
+          </p>
+          {visible.length === 0 && <p className="sidebar-empty">{t(section.kind === 'folder' ? 'sidebar.emptyFolder' : section.kind === 'trash' ? 'sidebar.emptyTrash' : 'sidebar.noDocuments')}</p>}
           <ul className="doc-list">
             {visible.map((doc) => (
               <DocItem key={doc.id} doc={doc} active={active === doc.id} trash={section.kind === 'trash'} showFileName={duplicateTitles.has(doc.title)} />

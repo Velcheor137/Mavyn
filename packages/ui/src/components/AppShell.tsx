@@ -76,6 +76,10 @@ export function AppShell() {
       if (mod && !e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         setOpenFilesOpen(true);
+      } else if (e.altKey && !mod && e.code === 'KeyN') {
+        // Ctrl+N belongs to the browser (new window).
+        e.preventDefault();
+        void createDocument(i18n.t('document.untitled'));
       } else if (mod && !e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
         void flushAll();
@@ -196,6 +200,18 @@ export function AppShell() {
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast toast-${toast.kind}`} role={toast.kind === 'error' ? 'alert' : 'status'}>
             <span>{t(toast.message as 'errors.unknown', toast.values ?? {})}</span>
+            {toast.action && (
+              <button
+                type="button"
+                className="toast-action"
+                onClick={() => {
+                  toast.action!.run();
+                  dismissToast(toast.id);
+                }}
+              >
+                {t(toast.action.label as 'errors.unknown')}
+              </button>
+            )}
             <button type="button" className="icon-button small" onClick={() => dismissToast(toast.id)} aria-label={t('settings.dismiss')}>
               <X size={12} aria-hidden />
             </button>

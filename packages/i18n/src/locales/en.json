@@ -27,7 +27,9 @@
     "documentsCount_other": "{{count}} documents",
     "searchResults_one": "{{count}} result",
     "searchResults_other": "{{count}} results",
-    "clearSearch": "Clear search"
+    "clearSearch": "Clear search",
+    "emptyFolder": "This folder is empty. New and opened files will go here.",
+    "emptyTrash": "Trash is empty"
   },
   "document": {
     "untitled": "Untitled",
@@ -71,7 +73,15 @@
     "fullscreen": "Focus mode",
     "exitFullscreen": "Exit focus mode",
     "move": "Move to folder",
-    "fileName": "File name"
+    "fileName": "File name",
+    "download": "Download (.md)",
+    "movedToTrash": "“{{title}}” moved to Trash",
+    "undo": "Undo",
+    "addedToFolder_one": "File added to “{{folder}}”",
+    "addedToFolder_other": "{{count}} files added to “{{folder}}”",
+    "renderFailed": "The preview could not be built",
+    "renderFailedHint": "The text is intact and can still be edited in Source view.",
+    "renderStale": "Showing the last version that could be rendered. The text itself is intact."
   },
   "save": {
     "saved": "Saved",

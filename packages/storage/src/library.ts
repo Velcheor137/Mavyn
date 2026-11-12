@@ -203,6 +203,7 @@ export class Library {
   }
 
   async updateMeta(id: string, patch: MetaPatch): Promise<DocumentMeta> {
+    let retitled: string | null = null;
     const next = await this.backend.transaction(['documents', 'folders', 'contents'], 'readwrite', async (tx) => {
       const meta = await tx.get<DocumentMeta>('documents', id);
       if (!meta) throw new AppError('document.not_found', { id });
@@ -212,6 +213,7 @@ export class Library {
         // Without a heading the file name is the title, so a rename must show up in the list.
         const content = await tx.get<ContentRow>('contents', meta.contentHash);
         next.title = deriveTitle(content?.text ?? '', patch.fileName) || patch.fileName;
+        if (next.title !== meta.title && meta.deletedAt === null) retitled = content?.text ?? '';
       }
       if (patch.title !== undefined || patch.fileName !== undefined || patch.folderId !== undefined || patch.tags !== undefined) {
         next.updatedAt = this.iso();
@@ -219,6 +221,8 @@ export class Library {
       await tx.put('documents', next);
       return next;
     });
+    // Search matches titles too.
+    if (retitled !== null) this.index?.upsert(id, next.title, retitled);
     // `openedAt` alone is bookkeeping, not a change worth syncing or re-rendering for.
     if (Object.keys(patch).some((k) => k !== 'openedAt')) this.emit(id);
     return next;

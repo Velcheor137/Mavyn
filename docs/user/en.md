@@ -18,13 +18,18 @@ any SQLite `-wal`/`-shm` files; do not copy only the database file while the app
 
 ## Basics
 
-- **New document** creates a note and opens it in split view.
+- **New document** (Alt+N) creates a note and opens it in split view.
 - **Open file** (Ctrl+O) asks how to add files:
-  - *Copy into library* — the app keeps its own copy with version history.
-  - *Edit the original file* — saves go back to the file on disk (Chrome/Edge only; the browser asks
+  - *Add to Mavyn* — the app keeps its own copy with version history.
+  - *Edit the file in place* — saves go back to the file on disk (Chrome/Edge only; the browser asks
     for permission). If another program changed the file, the app does **not** overwrite it and
     offers to load the newer version or save yours as a copy.
-- Drag `.md` files onto the window to copy them into the library.
+- Drag `.md` files onto the window to add them to the library.
+- New, opened and dropped files go into the folder (and tag) you are viewing; the heading above
+  the document list says where you are. The open folder is remembered for the next start.
+- **Download (.md)** and **Move to trash** sit in the document toolbar next to history.
+  After deleting, the notification offers **Undo**.
+- Large documents (thousands of lines) render in the background without freezing the window.
 
 ## Organizing the library
 
@@ -73,6 +78,7 @@ HTTPS; relative image paths are not available in the web version.
 
 | Action | Keys |
 |---|---|
+| New document | Alt+N |
 | Open file | Ctrl+O |
 | Save now | Ctrl+S |
 | Search library | Ctrl+K |

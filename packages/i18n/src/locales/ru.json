@@ -31,7 +31,9 @@
     "searchResults_few": "{{count}} результата",
     "searchResults_many": "{{count}} результатов",
     "searchResults_other": "{{count}} результата",
-    "clearSearch": "Очистить поиск"
+    "clearSearch": "Очистить поиск",
+    "emptyFolder": "В папке пока пусто. Новые и открытые файлы попадут сюда.",
+    "emptyTrash": "Корзина пуста"
   },
   "document": {
     "untitled": "Без названия",
@@ -79,7 +81,17 @@
     "fullscreen": "Режим фокуса",
     "exitFullscreen": "Выйти из режима фокуса",
     "move": "Переместить в папку",
-    "fileName": "Имя файла"
+    "fileName": "Имя файла",
+    "download": "Скачать (.md)",
+    "movedToTrash": "«{{title}}» в корзине",
+    "undo": "Вернуть",
+    "addedToFolder_one": "Файл добавлен в папку «{{folder}}»",
+    "addedToFolder_few": "{{count}} файла добавлены в папку «{{folder}}»",
+    "addedToFolder_many": "{{count}} файлов добавлено в папку «{{folder}}»",
+    "addedToFolder_other": "{{count}} файла добавлены в папку «{{folder}}»",
+    "renderFailed": "Не удалось построить предпросмотр",
+    "renderFailedHint": "Текст цел, его можно открыть и править в режиме «Исходник».",
+    "renderStale": "Показана последняя версия, которую удалось отрисовать. Сам текст цел."
   },
   "save": {
     "saved": "Сохранено",

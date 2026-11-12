@@ -554,6 +554,14 @@ body {
   padding: 6px 12px;
   border-bottom: 1px solid var(--color-border);
 }
+.icon-button-danger:hover:not(:disabled) {
+  color: var(--color-danger);
+}
+.render-error {
+  margin-bottom: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
 .save-indicator {
   display: inline-flex;
   align-items: center;
@@ -758,6 +766,19 @@ body {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow);
+}
+.toast-action {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toast-action:hover {
+  text-decoration: underline;
 }
 .toast-error {
   border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-border));

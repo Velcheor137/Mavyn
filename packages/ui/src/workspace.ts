@@ -14,7 +14,7 @@ import type { SearchHit } from '@mdr/storage';
 import { create } from 'zustand';
 import { loadWorkspaceSnapshot, saveWorkspaceSnapshot, usePreferences, type ViewMode } from './preferences.ts';
 import type { AppServices } from './services.tsx';
-import { importPickedFile } from './import-files.ts';
+import { importPickedFile, type Placement } from './import-files.ts';
 
 export type Section =
   | { kind: 'all' }
@@ -30,6 +30,8 @@ export interface Toast {
   /** i18n key */
   message: string;
   values?: Record<string, string | number>;
+  /** One follow-up button, e.g. "Undo". `label` is an i18n key. */
+  action?: { label: string; run(): void };
 }
 
 interface WorkspaceState {
@@ -73,18 +75,51 @@ function svc(): AppServices {
 }
 
 function persist(): void {
-  const { tabs, active, viewModes, positions } = useWorkspace.getState();
-  saveWorkspaceSnapshot({ tabs, active, viewModes, positions });
+  const { tabs, active, viewModes, positions, section } = useWorkspace.getState();
+  saveWorkspaceSnapshot({ tabs, active, viewModes, positions, section });
+}
+
+/** Opens a sidebar section (folder, tag, …) and remembers it for the next start. */
+export function setSection(section: Section): void {
+  useWorkspace.setState({ section });
+  persist();
+}
+
+/** A remembered section is kept only while its folder or tag still exists. */
+function restoredSection(saved: unknown, documents: DocumentMeta[], folders: Folder[]): Section {
+  const section = saved as Partial<Section> | null;
+  switch (section?.kind) {
+    case 'favorites':
+    case 'recent':
+    case 'trash':
+      return { kind: section.kind };
+    case 'folder':
+      return folders.some((f) => f.id === section.folderId) ? { kind: 'folder', folderId: section.folderId! } : { kind: 'all' };
+    case 'tag':
+      return documents.some((d) => d.deletedAt === null && d.tags.includes(section.tag!)) ? { kind: 'tag', tag: section.tag! } : { kind: 'all' };
+    default:
+      return { kind: 'all' };
+  }
+}
+
+/** Where new and opened documents go: the open folder (so they show up there) and the open tag. */
+function currentPlacement(): Placement {
+  const { section, folders } = useWorkspace.getState();
+  return {
+    folderId: section.kind === 'folder' && folders.some((f) => f.id === section.folderId) ? section.folderId : null,
+    tags: section.kind === 'tag' ? [section.tag] : [],
+  };
 }
 
 export function getSession(id: string): DocumentSession | undefined {
   return sessions.get(id);
 }
 
-export function notify(message: string, kind: Toast['kind'] = 'info', values?: Toast['values']): void {
-  const toast: Toast = { id: ++toastSeq, kind, message, ...(values ? { values } : {}) };
+export function notify(message: string, kind: Toast['kind'] = 'info', values?: Toast['values'], action?: Toast['action']): void {
+  const toast: Toast = { id: ++toastSeq, kind, message, ...(values ? { values } : {}), ...(action ? { action } : {}) };
   useWorkspace.setState((s) => ({ toasts: [...s.toasts, toast] }));
-  setTimeout(() => dismissToast(toast.id), kind === 'error' ? 8000 : 4000);
+  // Leave enough time to reach an "Undo" button.
+  setTimeout(() => dismissToast(toast.id), kind === 'error' || action ? 8000 : 4000);
 }
 
 export function notifyError(error: unknown): void {
@@ -101,9 +136,11 @@ export async function initWorkspace(appServices: AppServices): Promise<void> {
   services = appServices;
   const snapshot = loadWorkspaceSnapshot();
   await refreshLibrary();
-  const known = new Set(useWorkspace.getState().documents.map((d) => d.id));
+  const { documents, folders } = useWorkspace.getState();
+  const known = new Set(documents.map((d) => d.id));
   const tabs = snapshot.tabs.filter((id) => known.has(id));
   useWorkspace.setState({
+    section: restoredSection(snapshot.section, documents, folders),
     tabs,
     active: snapshot.active && tabs.includes(snapshot.active) ? snapshot.active : (tabs[0] ?? null),
     viewModes: snapshot.viewModes,
@@ -231,8 +268,8 @@ export function setReadingPosition(id: string, fraction: number): void {
  */
 export async function createDocument(title: string): Promise<void> {
   const { library } = svc();
-  const { section, folders, documents } = useWorkspace.getState();
-  const folderId = section.kind === 'folder' && folders.some((f) => f.id === section.folderId) ? section.folderId : null;
+  const { section, documents } = useWorkspace.getState();
+  const { folderId, tags } = currentPlacement();
   // "Untitled", "Untitled 2", …: distinct names in the folder, also for exports and other devices.
   const taken = new Set(documents.filter((d) => d.deletedAt === null && d.folderId === folderId).map((d) => d.fileName.toLowerCase()));
   let name = title;
@@ -241,7 +278,7 @@ export async function createDocument(title: string): Promise<void> {
     text: `# ${name}\n\n`,
     fileName: `${name}.md`,
     folderId,
-    tags: section.kind === 'tag' ? [section.tag] : [],
+    tags,
   });
   if (section.kind === 'favorites') await library.updateMeta(meta.id, { favorite: true });
   await refreshLibrary();
@@ -249,14 +286,19 @@ export async function createDocument(title: string): Promise<void> {
   await openDocument(meta.id);
 }
 
-/** Adds picked/dropped files. Linked files keep a locator for in-place saving. */
+/**
+ * Adds picked/dropped files to the folder the user is looking at (like new documents), so they
+ * show up where expected and, in a synced folder, reach the other devices. Linked files keep a
+ * locator for in-place saving.
+ */
 export async function addFiles(files: PickedFile[]): Promise<PickedFile[]> {
   const { library } = svc();
+  const placement = currentPlacement();
   let lastId: string | null = null;
   const saved: PickedFile[] = [];
   for (const file of files) {
     try {
-      const meta = await importPickedFile(library, file);
+      const meta = await importPickedFile(library, file, placement);
       saved.push(file);
       if (!meta.deletedAt) lastId = meta.id;
     } catch (error) {
@@ -265,6 +307,8 @@ export async function addFiles(files: PickedFile[]): Promise<PickedFile[]> {
   }
   await refreshLibrary();
   if (lastId) await openDocument(lastId);
+  const folder = useWorkspace.getState().folders.find((f) => f.id === placement.folderId);
+  if (saved.length && folder) notify('document.addedToFolder', 'info', { count: saved.length, folder: folder.name });
   return saved;
 }
 
@@ -277,10 +321,16 @@ export async function updateDocument(id: string, patch: Parameters<AppServices['
   }
 }
 
+/** Moves a document to Trash and offers to undo it right away. */
 export async function trashDocument(id: string): Promise<void> {
+  const title = useWorkspace.getState().documents.find((d) => d.id === id)?.title ?? '';
   await closeTab(id);
   await svc().library.trash(id);
   await refreshLibrary();
+  notify('document.movedToTrash', 'info', { title }, {
+    label: 'document.undo',
+    run: () => void restoreDocument(id).then(() => openDocument(id)).catch(notifyError),
+  });
 }
 
 export async function restoreDocument(id: string): Promise<void> {
