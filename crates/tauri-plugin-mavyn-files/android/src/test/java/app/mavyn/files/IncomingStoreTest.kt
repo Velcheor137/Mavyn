@@ -32,8 +32,10 @@ class IncomingStoreTest {
             val store = IncomingStore(root)
             assertFalse(interrupted.exists())
             assertTrue(unrelated.exists())
-            try { store.put("a.md", byteArrayOf(-1)); fail() }
-            catch (error: SafFailure) { assertEquals("file.not_utf8", error.code) }
+            // Non-UTF-8 text (e.g. windows-1251) is kept as is; the app detects the encoding.
+            val legacy = store.put("a.txt", byteArrayOf(-49, -16, -24))
+            assertArrayEquals(byteArrayOf(-49, -16, -24), store.peek()!!.bytes)
+            store.ack(legacy)
             assertNull(store.peek())
         } finally { root.deleteRecursively() }
     }
@@ -58,7 +60,7 @@ class IncomingStoreTest {
         val root = Files.createTempDirectory("mavyn-incoming").toFile()
         try {
             val store = IncomingStore(root)
-            try { store.put("image.png", byteArrayOf()); fail() }
+            try { store.put("a/b.png", byteArrayOf()); fail() }
             catch (error: SafFailure) { assertEquals("file.unsupported", error.code) }
             repeat(IncomingStore.MAX_ENTRIES) { store.put("a.md", byteArrayOf(1)) }
             try { store.put("b.md", byteArrayOf(2)); fail() }

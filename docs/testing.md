@@ -19,6 +19,15 @@ Highlights:
 - `packages/sync-client/src/engine.test.ts` — two devices against an in-memory server: merges,
   conflicts and resolutions, tombstones, lost responses, offline, re-linking.
 - `packages/ui/src/sync.test.tsx` — sign in, pull, conflict banner, *keep both* in the rendered app.
+- `packages/core/src/encoding.test.ts` — text detection (UTF-8/16 with and without BOM, windows-1251,
+  koi8-r, Shift_JIS, binary refusal) and byte-exact writing back; `file.unencodable`; titles by format.
+- `packages/ui/src/sheets/sheets.test.ts` — CSV dialects, HyperFormula recalculation and moved
+  references, xlsx and ods read/edit/write (untouched styling, page setup, merges, parts byte for
+  byte), unsupported parts (charts, macros).
+- `packages/ui/src/docx/docx.test.ts` — untouched blocks written back byte for byte, edited paragraph
+  regenerated with its properties, new images/lists/table columns, tracked changes and comments.
+- `packages/sync-client/src/engine.test.ts` — also file edits on two devices with every resolution,
+  originals of import on new devices, file encodings in the change feed.
 - `packages/i18n/src/i18n.test.ts` — en/ru key parity, Russian plural forms, interpolation variables.
 
 ## Native SQLite and linked saving
@@ -48,7 +57,8 @@ still run. The test-only stdio bridge is not part of the production app or its p
 Coverage: commit/reopen with exact CRLF/Cyrillic/emoji; rollback and connection drop; token,
 scope and readonly rejection; idle transaction reaping with two real file-backed connections;
 FTS5 en/ru/prefix/trash/restore; future-schema refusal; migration retry and source preservation;
-retention and shared content; same-size/same-mtime external file edit rejection.
+shared content; schema upgrades v1→v3 (v3 drops version history and orphaned content);
+same-size/same-mtime external file edit rejection.
 
 ## Rust server (Docker, no host toolchain needed)
 

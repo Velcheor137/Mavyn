@@ -1,6 +1,7 @@
 /** TypeScript mirror of `crates/sync-protocol/src/lib.rs`. Keep both in step. */
 
-export const PROTOCOL_VERSION = 1;
+/** 2: editable binary documents, no version history, file encodings (see the server). */
+export const PROTOCOL_VERSION = 2;
 
 export type Role = 'viewer' | 'editor' | 'admin' | 'owner';
 
@@ -30,6 +31,14 @@ export interface DocumentInfo {
   content_hash: string;
   updated_at: string;
   deleted_at: string | null;
+  /** Absent from servers older than binary documents: everything there is text. */
+  kind?: 'text' | 'file';
+  /** MIME type of a `file` document; null for text. */
+  mime?: string | null;
+  /** WHATWG file encoding of a text document; null (or absent) for UTF-8. */
+  encoding?: string | null;
+  /** Binary documents: SHA-256 of the original of import (never changes); null for text. */
+  original_hash?: string | null;
 }
 
 export interface DocumentWithContent extends DocumentInfo {
@@ -59,6 +68,25 @@ export interface CreateDocumentRequest {
   file_name: string;
   content: string;
   folder_id?: string | null;
+  /** WHATWG file encoding; omit for UTF-8. */
+  encoding?: string;
+}
+
+/** Query of `PUT /documents/{id}/file` (an edited binary document); the bytes are the body. */
+export interface ReplaceFileRequest {
+  base_revision_id: string;
+  /** Hex SHA-256 of the body; becomes `content_hash`. */
+  sha256: string;
+}
+
+/** Query of `POST /libraries/{id}/files`; the bytes are the raw request body. */
+export interface UploadFileRequest {
+  id: string;
+  file_name: string;
+  folder_id: string | null;
+  /** Hex SHA-256 of the body; becomes `content_hash`. */
+  sha256: string;
+  mime: string;
 }
 
 export interface UpdateContentRequest {
@@ -73,6 +101,9 @@ export interface UpdateDocumentMetaRequest {
   base_folder_id: string | null;
   file_name: string;
   folder_id: string | null;
+  /** File encoding, compare-and-swapped like the name (`utf-8` for UTF-8); omit to leave it. */
+  base_encoding?: string;
+  encoding?: string;
 }
 
 /** A live folder with the same name under the same parent is returned instead (different id). */

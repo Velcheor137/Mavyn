@@ -40,7 +40,8 @@ Further accounts are created by an administrator (`POST /api/v1/users`); there i
 | `COOKIE_SECURE` | `true` | Secure `__Host-` session cookie. Set `false` only for plain-HTTP tests. |
 | `TRUST_PROXY` | `false` | Use `X-Forwarded-For` for rate limiting. Enable only behind your own proxy. |
 | `BIND_HOST` / `HTTP_PORT` | `127.0.0.1` / `8080` | Published address. Keep localhost and put a TLS proxy in front. |
-| `MAX_DOCUMENT_BYTES` | 16 MiB | Maximum document size. |
+| `MAX_DOCUMENT_BYTES` | 256 MiB | Maximum size of a text document (Markdown, plain text, code, logs). Search indexes the first 256 KiB of each. |
+| `MAX_FILE_BYTES` | 50 MiB | Maximum size of a view-only binary document (docx, xlsx, ods, pdf). Clients refuse larger files anyway. |
 | `SESSION_TTL_DAYS` | 30 | Session lifetime. |
 
 Migrations run automatically at startup. If one fails, the server exits instead of serving with a

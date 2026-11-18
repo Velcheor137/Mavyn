@@ -1,10 +1,10 @@
 import 'katex/dist/katex.min.css';
 import '@mdr/ui/styles.css';
 import { createI18n, detectLocale, I18nextProvider } from '@mdr/i18n';
-import { WebPlatformAdapter } from '@mdr/platform';
+import { fileToPicked, WebPlatformAdapter } from '@mdr/platform';
 import { adoptLegacyLibrary, IndexedDbBackend, Library, MemoryBackend, type Backend } from '@mdr/storage';
 import { HttpSyncApi } from '@mdr/sync-client';
-import { AppShell, AuthGate, initSync, initWorkspace, ServicesProvider, usePreferences, type AppServices, type AuthenticatedUser } from '@mdr/ui';
+import { addFiles, AppShell, AuthGate, initSync, initWorkspace, notifyError, ServicesProvider, usePreferences, type AppServices, type AuthenticatedUser } from '@mdr/ui';
 import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createHandleStore } from './handles.ts';
@@ -53,6 +53,21 @@ async function openAccountBackend(user: AuthenticatedUser): Promise<Backend> {
   return backend;
 }
 
+interface LaunchQueue {
+  setConsumer(consumer: (params: { files: ReadonlyArray<{ getFile(): Promise<File> }> }) => void): void;
+}
+
+/** Files opened with the installed PWA ("Open with Mavyn", manifest `file_handlers`) are imported. */
+function consumeLaunchedFiles(): void {
+  const queue = (window as unknown as { launchQueue?: LaunchQueue }).launchQueue;
+  queue?.setConsumer((params) => {
+    void (async () => {
+      const files = await Promise.all(params.files.map(async (handle) => fileToPicked(await handle.getFile())));
+      if (files.length) await addFiles(files);
+    })().catch(notifyError);
+  });
+}
+
 async function boot(): Promise<void> {
   const locale = usePreferences.getState().locale ?? detectLocale(navigator.languages ?? [navigator.language]);
   document.documentElement.lang = locale;
@@ -85,6 +100,7 @@ async function boot(): Promise<void> {
       </ServicesProvider>,
     );
     await initWorkspace(services);
+    consumeLaunchedFiles();
     await initSync(services);
   };
 

@@ -1,4 +1,6 @@
+export * from './encoding.ts';
 export * from './errors.ts';
+export * from './files.ts';
 export * from './hash.ts';
 export * from './ids.ts';
 export * from './merge.ts';

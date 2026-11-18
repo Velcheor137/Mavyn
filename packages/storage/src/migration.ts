@@ -29,7 +29,12 @@ export async function migrateLegacy(openSource: () => Promise<Backend>, target: 
       for (const store of stores) result[store] = await tx.getAll(store);
       return result;
     });
-    assertJson(snapshot);
+    // File rows carry raw bytes; everything else must survive JSON storage unchanged.
+    for (const store of stores) if (store !== 'files') assertJson(snapshot[store]);
+    for (const row of snapshot.files ?? []) {
+      const { hash, bytes } = row as { hash?: unknown; bytes?: unknown };
+      if (typeof hash !== 'string' || !(bytes instanceof Uint8Array)) throw new AppError('storage.failed', { reason: 'bad_file_record' });
+    }
     await target.importLegacy(snapshot);
   } finally { source.close(); }
 }

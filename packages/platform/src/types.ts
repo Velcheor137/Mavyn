@@ -1,4 +1,4 @@
-import type { FileFingerprint } from '@mdr/core';
+import { FILE_EXTENSIONS, FILE_TYPES, type FileFingerprint } from '@mdr/core';
 
 export interface PickedFile {
   /** Native durable delivery id; also the id of its managed document for crash-safe retry. */
@@ -38,7 +38,10 @@ export interface PlatformAdapter {
 
 export const MARKDOWN_EXTENSIONS = ['.md', '.markdown', '.mdown', '.mkd', '.mdx', '.txt'] as const;
 
-export function isMarkdownName(name: string): boolean {
+/** Names the pickers highlight first. Any other text file is accepted too (see `detectText`). */
+export const SUPPORTED_EXTENSIONS: readonly string[] = [...MARKDOWN_EXTENSIONS, ...FILE_EXTENSIONS];
+
+export function isSupportedName(name: string): boolean {
   const lower = name.toLowerCase();
-  return MARKDOWN_EXTENSIONS.some((ext) => lower.endsWith(ext));
+  return SUPPORTED_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }

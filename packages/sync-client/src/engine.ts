@@ -1,4 +1,15 @@
-import { AppError, sha256Hex, threeWayMerge, type DocumentMeta, type ErrorCode, type Folder, type FolderRemote, type RemoteRef } from '@mdr/core';
+import {
+  AppError,
+  detectFileType,
+  isFileDocument,
+  sha256Hex,
+  threeWayMerge,
+  type DocumentMeta,
+  type ErrorCode,
+  type Folder,
+  type FolderRemote,
+  type RemoteRef,
+} from '@mdr/core';
 import type { Library, MetaPatch } from '@mdr/storage';
 import { SyncHttpError, toSyncAppError, type SyncApi } from './api.ts';
 import type { ConflictDetails, DocumentInfo, DocumentWithContent, FolderInfo } from './protocol.ts';
@@ -15,6 +26,11 @@ export interface SyncConnection {
   /** Local folder mirroring the server library root. Everything below it (subfolders too) is synced. */
   folderId: string;
   cursor: string;
+  /**
+   * The cursor was obtained with `files=1`. Cursors from older versions skipped binary documents,
+   * so they are discarded once and the feed is read again from the start.
+   */
+  files?: boolean;
 }
 
 export type SyncState =
@@ -36,6 +52,11 @@ export interface SyncEngineOptions {
   pushDelayMs?: number;
   /** Periodic pull interval while running. */
   pollIntervalMs?: number;
+  /**
+   * Edited binary documents (up to 50 MiB each) are uploaded only after this long without further
+   * local saves, not after every autosave. Default 30 s.
+   */
+  filePushDelayMs?: number;
   random?: () => number;
 }
 
@@ -211,16 +232,20 @@ export class SyncEngine {
     return !doc.remote?.baseRevisionId || doc.contentHash !== doc.remote.baseHash;
   }
 
-  /** Last name/location the server is known to have (copies from before folder sync: root, own name). */
-  private metaBase(doc: DocumentMeta): { name: string; folder: string | null } {
-    return { name: doc.remote?.baseFileName ?? doc.fileName, folder: doc.remote?.baseFolderId ?? null };
+  /** Last name/location/encoding the server is known to have (older copies: root, own name and encoding). */
+  private metaBase(doc: DocumentMeta): MetaBase {
+    return {
+      name: doc.remote?.baseFileName ?? doc.fileName,
+      folder: doc.remote?.baseFolderId ?? null,
+      encoding: doc.remote?.baseEncoding !== undefined ? doc.remote.baseEncoding : encodingOf(doc),
+    };
   }
 
   private isMetaPending(doc: DocumentMeta, view: FolderView): boolean {
     if (doc.deletedAt !== null || !doc.remote?.baseRevisionId || doc.remote.conflict) return false;
     const base = this.metaBase(doc);
     const location = this.serverFolderOf(doc.folderId, view);
-    return doc.fileName !== base.name || (location !== undefined && location !== base.folder);
+    return doc.fileName !== base.name || (location !== undefined && location !== base.folder) || (!isFileDocument(doc) && encodingOf(doc) !== base.encoding);
   }
 
   private ownsRemote(remote: { serverId: string; libraryId: string }): boolean {
@@ -277,6 +302,7 @@ export class SyncEngine {
       // Content uploads do not change name/location; only metadata sync moves that base.
       baseFileName: previous ? previous.baseFileName : info.file_name,
       baseFolderId: previous ? previous.baseFolderId : info.folder_id,
+      baseEncoding: previous ? previous.baseEncoding : (info.encoding ?? null),
     };
   }
 
@@ -299,7 +325,7 @@ export class SyncEngine {
   private async pull(changed: Set<string>): Promise<void> {
     const documents = new Map<string, DocumentInfo>();
     const folders = new Map<string, FolderInfo>();
-    let cursor = this.connection.cursor;
+    let cursor = this.connection.files ? this.connection.cursor : '';
     for (;;) {
       const page = await this.api.changes(this.connection.libraryId, cursor);
       for (const info of page.documents) documents.set(info.id, info);
@@ -312,7 +338,7 @@ export class SyncEngine {
     await this.applyFolders([...folders.values()].filter((f) => !f.deleted_at), changed);
     for (const info of documents.values()) await this.applyRemote(info, changed);
     for (const info of folders.values()) if (info.deleted_at) await this.applyFolderDeletion(info, changed);
-    this.connection = { ...this.connection, cursor };
+    this.connection = { ...this.connection, cursor, files: true };
     await this.options.saveConnection(this.connection);
   }
 
@@ -435,6 +461,11 @@ export class SyncEngine {
       return;
     }
 
+    if (info.kind === 'file' || (local && isFileDocument(local))) {
+      await this.applyRemoteFile(info, local, view, changed);
+      return;
+    }
+
     if (!local) {
       const full = await this.api.getDocument(info.id);
       await this.applying_(async () => {
@@ -442,9 +473,9 @@ export class SyncEngine {
           id: full.id,
           text: full.content,
           fileName: full.file_name,
+          ...(full.encoding ? { encoding: full.encoding } : {}),
           folderId: this.localFolderOf(full.folder_id, view),
           remote: this.remoteRef(full),
-          reason: 'sync',
         });
         await this.library.putSyncBase({ documentId: full.id, hash: full.content_hash, text: full.content });
       });
@@ -468,13 +499,76 @@ export class SyncEngine {
     await this.applyRemoteMeta(info.id, info, base, changed);
   }
 
+  /**
+   * Binary documents are immutable: the bytes are downloaded once, never merged; afterwards only
+   * the name and location follow the server.
+   */
+  private async applyRemoteFile(info: DocumentInfo, local: DocumentMeta | null, view: FolderView, changed: Set<string>): Promise<void> {
+    if (!local) {
+      const bytes = await this.downloadVerified(info.id, info.file_name, info.content_hash, false);
+      // An edited document also brings its original of import (kept on every device).
+      const originalBytes = info.original_hash && info.original_hash !== info.content_hash
+        ? await this.downloadVerified(info.id, info.file_name, info.original_hash, true)
+        : undefined;
+      const type = detectFileType(info.file_name, bytes);
+      await this.applying_(() =>
+        this.library.createFileDocument({
+          id: info.id,
+          bytes,
+          ...(originalBytes ? { originalBytes } : {}),
+          fileName: info.file_name,
+          mime: info.mime ?? type.mime,
+          folderId: this.localFolderOf(info.folder_id, view),
+          remote: this.remoteRef(info),
+        }),
+      );
+      changed.add(info.id);
+      return;
+    }
+    const base = this.metaBase(local);
+    const remote = local.remote;
+    if (remote?.baseRevisionId !== info.head_revision_id && !remote?.conflict) {
+      if (local.contentHash === info.content_hash || (remote?.baseRevisionId && remote.baseHash === info.content_hash)) {
+        // Same bytes (a lost create response, or a metadata-only change): adopt the server head.
+        await this.applying_(() => this.library.updateMeta(info.id, { remote: this.remoteRef(info, remote) }));
+      } else if (remote?.baseRevisionId && local.contentHash === remote.baseHash) {
+        // Edited elsewhere, untouched here: take the new bytes.
+        const bytes = await this.downloadVerified(info.id, info.file_name, info.content_hash, false);
+        await this.applying_(async () => {
+          await this.library.saveFile(info.id, bytes, local.contentHash);
+          await this.library.updateMeta(info.id, { remote: this.remoteRef(info, remote) });
+        });
+        changed.add(info.id);
+      } else {
+        // Edited on both sides (or unknown ancestry): never pick a side silently.
+        const ref = remote ?? this.remoteRef(info);
+        await this.applying_(() =>
+          this.library.updateMeta(info.id, { remote: { ...ref, conflict: { revisionId: info.head_revision_id, hash: info.content_hash } } }),
+        );
+        changed.add(info.id);
+      }
+    }
+    await this.applyRemoteMeta(info.id, info, base, changed);
+  }
+
+  /** Downloads a binary document (or its original) and checks it like a local import. */
+  private async downloadVerified(id: string, fileName: string, hash: string, original: boolean): Promise<Uint8Array> {
+    const bytes = original ? await this.api.downloadOriginal(id) : await this.api.downloadFile(id);
+    // The server copy is untrusted input too.
+    if ((await sha256Hex(bytes)) !== hash) throw new AppError('server.unavailable', { reason: 'file_hash' });
+    detectFileType(fileName, bytes);
+    return bytes;
+  }
+
   /** Takes the server's file name and folder for fields the server changed relative to `base`. */
-  private async applyRemoteMeta(id: string, info: DocumentInfo, base: { name: string; folder: string | null }, changed: Set<string>): Promise<void> {
+  private async applyRemoteMeta(id: string, info: DocumentInfo, base: MetaBase, changed: Set<string>): Promise<void> {
     const doc = await this.library.getDocument(id);
     if (doc.deletedAt !== null || !doc.remote) return;
     const view = await this.view();
-    const patch: MetaPatch = { remote: { ...doc.remote, baseFileName: info.file_name, baseFolderId: info.folder_id } };
+    const theirsEncoding = info.encoding ?? null;
+    const patch: MetaPatch = { remote: { ...doc.remote, baseFileName: info.file_name, baseFolderId: info.folder_id, baseEncoding: theirsEncoding } };
     if (info.file_name !== base.name && info.file_name !== doc.fileName) patch.fileName = info.file_name;
+    if (!isFileDocument(doc) && theirsEncoding !== base.encoding && theirsEncoding !== encodingOf(doc)) patch.encoding = theirsEncoding ?? 'utf-8';
     const target = this.localFolderOf(info.folder_id, view);
     // A document moved out of the synced folder here stays where the user put it.
     if (info.folder_id !== base.folder && target !== doc.folderId && this.serverFolderOf(doc.folderId, view) !== undefined) patch.folderId = target;
@@ -484,6 +578,7 @@ export class SyncEngine {
 
   /** Brings a newer server version into a local document (fast-forward, merge, or conflict). */
   private async integrate(local: DocumentMeta, theirs: DocumentWithContent): Promise<void> {
+    if (isFileDocument(local)) throw new AppError('document.not_text', { id: local.id });
     const { text: ours, version } = await this.library.readContent(local.id);
     const ref = this.remoteRef(theirs, local.remote);
     await this.applying_(async () => {
@@ -497,14 +592,17 @@ export class SyncEngine {
         return;
       } else if (version === local.remote.baseHash) {
         // No local changes since the last sync: fast-forward.
-        await this.library.saveContent(local.id, theirs.content, version, 'sync');
+        await this.library.saveContent(local.id, theirs.content, version);
         await this.library.updateMeta(local.id, { remote: ref });
       } else {
         const base = (await this.library.getSyncBase(local.id))?.text ?? '';
-        const merged = threeWayMerge(base, ours, theirs.content);
+        // Line diffs of very large texts (logs up to 256 MiB) can take minutes and a lot of memory:
+        // above the budget the user resolves it with the conflict banner instead.
+        const tooLarge = base.length + ours.length + theirs.content.length > MERGE_BUDGET_CHARS;
+        const merged = tooLarge ? { clean: false, text: ours } : threeWayMerge(base, ours, theirs.content);
         if (merged.clean) {
           // New base = theirs; the merged text is pending and uploads on top of their head.
-          if (merged.text !== ours) await this.library.saveContent(local.id, merged.text, version, 'merge');
+          if (merged.text !== ours) await this.library.saveContent(local.id, merged.text, version);
           await this.library.updateMeta(local.id, { remote: ref });
         } else {
           await this.library.updateMeta(local.id, {
@@ -529,7 +627,10 @@ export class SyncEngine {
           await this.pushDelete(doc);
           continue;
         }
-        if (!doc.remote?.baseRevisionId) await this.pushCreate(doc, view, changed);
+        if (isFileDocument(doc)) {
+          if (!doc.remote?.baseRevisionId) await this.pushCreateFile(doc, view, changed);
+          else if (this.fileSettled(doc)) await this.pushUpdateFile(doc, changed);
+        } else if (!doc.remote?.baseRevisionId) await this.pushCreate(doc, view, changed);
         else await this.pushUpdate(doc, changed, 0);
       }
       const current = await this.findLocal(doc.id);
@@ -604,14 +705,20 @@ export class SyncEngine {
     const location = here === undefined ? base.folder : here;
     let info: DocumentInfo;
     try {
-      info = await this.api.updateDocumentMeta(doc.id, { base_file_name: base.name, base_folder_id: base.folder, file_name: doc.fileName, folder_id: location });
+      info = await this.api.updateDocumentMeta(doc.id, {
+        base_file_name: base.name,
+        base_folder_id: base.folder,
+        file_name: doc.fileName,
+        folder_id: location,
+        ...(isFileDocument(doc) ? {} : { base_encoding: base.encoding ?? 'utf-8', encoding: encodingOf(doc) ?? 'utf-8' }),
+      });
     } catch (error) {
       // Deleted on the server meanwhile: the next pull brings the deletion.
       if (error instanceof SyncHttpError && error.code === 'document.not_found') return;
       throw error;
     }
     // Fields the server refused (changed there first) take the server value here.
-    await this.applyRemoteMeta(doc.id, info, { name: doc.fileName, folder: location }, changed);
+    await this.applyRemoteMeta(doc.id, info, { name: doc.fileName, folder: location, encoding: encodingOf(doc) }, changed);
   }
 
   private async pushDelete(doc: DocumentMeta): Promise<void> {
@@ -632,7 +739,8 @@ export class SyncEngine {
     let info: DocumentInfo;
     try {
       const folderId = this.serverFolderOf(doc.folderId, view) ?? null;
-      info = await this.api.createDocument(this.connection.libraryId, { id: doc.id, file_name: doc.fileName, content: text, folder_id: folderId }, opId);
+      const encoding = encodingOf(doc);
+      info = await this.api.createDocument(this.connection.libraryId, { id: doc.id, file_name: doc.fileName, content: text, folder_id: folderId, ...(encoding ? { encoding } : {}) }, opId);
     } catch (error) {
       if (!(error instanceof SyncHttpError && error.code === 'sync.conflict')) throw error;
       // The id already exists on the server (a re-linked copy): adopt it without overwriting.
@@ -648,6 +756,68 @@ export class SyncEngine {
       await this.library.putSyncBase({ documentId: doc.id, hash: info.content_hash, text });
     });
     changed.add(doc.id);
+  }
+
+  private async pushCreateFile(doc: DocumentMeta, view: FolderView, changed: Set<string>): Promise<void> {
+    const { bytes } = await this.library.readFile(doc.id);
+    const opId = await operationId('upload', doc.id, doc.contentHash);
+    let info: DocumentInfo;
+    try {
+      const folderId = this.serverFolderOf(doc.folderId, view) ?? null;
+      info = await this.api.uploadFile(
+        this.connection.libraryId,
+        { id: doc.id, file_name: doc.fileName, folder_id: folderId, sha256: doc.contentHash, mime: doc.mime ?? 'application/octet-stream' },
+        bytes,
+        opId,
+      );
+    } catch (error) {
+      if (!(error instanceof SyncHttpError && error.code === 'sync.conflict')) throw error;
+      // The id already exists on the server (a re-linked copy): the next sync reads the feed from
+      // the start and adopts it if the bytes match, or reports a conflict (never overwrites).
+      this.connection = { ...this.connection, cursor: '' };
+      await this.options.saveConnection(this.connection);
+      return;
+    }
+    await this.applying_(() => this.library.updateMeta(doc.id, { remote: this.remoteRef(info) }));
+    changed.add(doc.id);
+  }
+
+  /** True when an edited file has been quiet long enough to upload; otherwise schedules a later run. */
+  private fileSettled(doc: DocumentMeta): boolean {
+    const delay = this.options.filePushDelayMs ?? 30_000;
+    const quiet = Date.now() - Date.parse(doc.updatedAt);
+    if (quiet >= delay) return true;
+    this.schedule(delay - quiet);
+    return false;
+  }
+
+  /** Uploads edited bytes on top of the known server head (no merge for binary documents). */
+  private async pushUpdateFile(doc: DocumentMeta, changed: Set<string>): Promise<void> {
+    const { bytes } = await this.library.readFile(doc.id);
+    const base = doc.remote!.baseRevisionId!;
+    const opId = await operationId('replace', doc.id, base, doc.contentHash);
+    try {
+      const info = await this.api.replaceFile(doc.id, { base_revision_id: base, sha256: doc.contentHash }, bytes, opId);
+      await this.applying_(() => this.library.updateMeta(doc.id, { remote: this.remoteRef(info, doc.remote) }));
+    } catch (error) {
+      if (error instanceof SyncHttpError && error.code === 'sync.conflict') {
+        // Edited on another device too: the user decides (banner); nothing is overwritten.
+        const details = error.details as ConflictDetails | null;
+        await this.applying_(() =>
+          this.library.updateMeta(doc.id, {
+            remote: { ...doc.remote!, conflict: { revisionId: details?.head_revision_id ?? '', hash: details?.content_hash ?? '' } },
+          }),
+        );
+        changed.add(doc.id);
+        return;
+      }
+      if (error instanceof SyncHttpError && error.code === 'document.not_found') {
+        await this.applying_(() => this.library.updateMeta(doc.id, { remote: null, folderId: null }));
+        changed.add(doc.id);
+        return;
+      }
+      throw error;
+    }
   }
 
   private async pushUpdate(doc: DocumentMeta, changed: Set<string>, depth: number): Promise<void> {
@@ -701,6 +871,14 @@ export class SyncEngine {
       const doc = await this.library.getDocument(id);
       const conflict = doc.remote?.conflict;
       if (!doc.remote || !conflict) return;
+      if (isFileDocument(doc)) {
+        // The local bytes go up on top of the server head that caused the conflict.
+        await this.applying_(() =>
+          this.library.updateMeta(id, { remote: { ...doc.remote!, baseRevisionId: conflict.revisionId, baseHash: conflict.hash, conflict: null } }),
+        );
+        await this.syncNow();
+        return;
+      }
       const theirs = await this.api.getDocument(id);
       await this.applying_(async () => {
         await this.library.updateMeta(id, { remote: { ...this.remoteRef(theirs, doc.remote), conflict: null } });
@@ -710,7 +888,7 @@ export class SyncEngine {
     });
   }
 
-  /** Replace the local text with the server version (the local text stays in local history). */
+  /** Replace the local text with the server version. Without version history the local text is gone, so the UI warns first. */
   async useServer(id: string): Promise<void> {
     return this.operation(() => this.useServer_(id));
   }
@@ -718,10 +896,23 @@ export class SyncEngine {
   private async useServer_(id: string): Promise<void> {
     const doc = await this.library.getDocument(id);
     if (!doc.remote?.conflict) return;
+    if (isFileDocument(doc)) {
+      const conflict = doc.remote.conflict;
+      const bytes = await this.api.downloadFile(id);
+      detectFileType(doc.fileName, bytes);
+      const hash = await sha256Hex(bytes);
+      await this.applying_(async () => {
+        await this.library.saveFile(id, bytes, doc.contentHash);
+        await this.library.updateMeta(id, { remote: { ...doc.remote!, baseRevisionId: conflict.revisionId, baseHash: hash, conflict: null } });
+      });
+      this.options.onRemoteChange?.([id]);
+      await this.syncNow();
+      return;
+    }
     const theirs = await this.api.getDocument(id);
     const { version } = await this.library.readContent(id);
     await this.applying_(async () => {
-      await this.library.saveContent(id, theirs.content, version, 'sync');
+      await this.library.saveContent(id, theirs.content, version);
       await this.library.updateMeta(id, { remote: this.remoteRef(theirs, doc.remote) });
       await this.library.putSyncBase({ documentId: id, hash: theirs.content_hash, text: theirs.content });
     });
@@ -733,10 +924,16 @@ export class SyncEngine {
   async keepBoth(id: string, copySuffix: string): Promise<string> {
     return this.operation(async () => {
       const doc = await this.library.getDocument(id);
-      const { text } = await this.library.readContent(id);
-      const copy = await this.applying_(() =>
-        this.library.createDocument({ text, fileName: doc.fileName.replace(/(\.[^.]+)?$/, ` (${copySuffix})$1`), bom: doc.bom, tags: doc.tags }),
-      );
+      const fileName = doc.fileName.replace(/(\.[^.]+)?$/, ` (${copySuffix})$1`);
+      const copy = isFileDocument(doc)
+        ? await this.applying_(async () => {
+            const { bytes } = await this.library.readFile(id);
+            return this.library.createFileDocument({ bytes, fileName, mime: doc.mime ?? 'application/octet-stream', tags: doc.tags });
+          })
+        : await this.applying_(async () => {
+            const { text } = await this.library.readContent(id);
+            return this.library.createDocument({ text, fileName, bom: doc.bom, encoding: doc.encoding, tags: doc.tags });
+          });
       await this.useServer_(id);
       return copy.id;
     });
@@ -746,4 +943,29 @@ export class SyncEngine {
   async serverText(id: string): Promise<string> {
     return this.operation(async () => (await this.api.getDocument(id)).content);
   }
+
+  /** Server bytes of a conflicted binary document ("Open the other version", read-only). */
+  async serverFile(id: string): Promise<Uint8Array> {
+    return this.operation(() => this.api.downloadFile(id));
+  }
+
+  /** Original of import from the server (a device that synced the document before originals). */
+  async serverOriginal(id: string): Promise<Uint8Array> {
+    return this.operation(() => this.api.downloadOriginal(id));
+  }
+}
+
+/** Combined size of base, ours and theirs above which no automatic merge is attempted. */
+export const MERGE_BUDGET_CHARS = 24 * 1024 * 1024;
+
+interface MetaBase {
+  name: string;
+  folder: string | null;
+  /** null = UTF-8. */
+  encoding: string | null;
+}
+
+/** File encoding of a text document as the server stores it: null for UTF-8. */
+function encodingOf(doc: DocumentMeta): string | null {
+  return doc.encoding && doc.encoding !== 'utf-8' ? doc.encoding : null;
 }

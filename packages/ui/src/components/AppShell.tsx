@@ -1,13 +1,13 @@
 import { detectLocale, useTranslation } from '@mdr/i18n';
-import { isMarkdownName, fileToPicked } from '@mdr/platform';
+import { fileToPicked } from '@mdr/platform';
 import { FilePlus2, FolderOpen, Maximize2, Minimize2, PanelLeft, PanelRight, X } from 'lucide-react';
 import { useCallback, useEffect, useState, type DragEvent } from 'react';
 import { useMediaQuery } from '../hooks.ts';
 import { applyPreferences, usePreferences } from '../preferences.ts';
-import { addFiles, applyAutosaveDelay, closeTab, createDocument, cycleTab, dismissToast, flushAll, getSession, setViewMode, useWorkspace } from '../workspace.ts';
+import { addFiles, applyAutosaveDelay, closeTab, createDocument, cycleTab, dismissToast, flushAll, getSession, setTranslator, setViewMode, useWorkspace } from '../workspace.ts';
 import { DocumentView } from './DocumentView.tsx';
-import { HistoryDialog } from './HistoryDialog.tsx';
 import { OpenFilesDialog } from './OpenFilesDialog.tsx';
+import { NewFileDialog } from './NewFileDialog.tsx';
 import { Outline } from './Outline.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { SetupDialog } from './SetupDialog.tsx';
@@ -25,7 +25,7 @@ export function AppShell() {
   const roomForOutline = useMediaQuery('(min-width: 1100px)');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openFilesOpen, setOpenFilesOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [newFileOpen, setNewFileOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -45,6 +45,7 @@ export function AppShell() {
     if (i18n.language !== locale) void i18n.changeLanguage(locale);
     document.documentElement.lang = locale;
   }, [prefs.locale, i18n]);
+  useEffect(() => setTranslator((key) => i18n.t(key as 'conflict.copySuffix')), [i18n]);
 
   useEffect(() => applyAutosaveDelay(prefs.autosaveDelayMs), [prefs.autosaveDelayMs]);
 
@@ -76,6 +77,9 @@ export function AppShell() {
       if (mod && !e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         setOpenFilesOpen(true);
+      } else if (e.altKey && e.shiftKey && !mod && e.code === 'KeyN') {
+        e.preventDefault();
+        setNewFileOpen(true);
       } else if (e.altKey && !mod && e.code === 'KeyN') {
         // Ctrl+N belongs to the browser (new window).
         e.preventDefault();
@@ -114,7 +118,8 @@ export function AppShell() {
   const onDrop = async (e: DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const files = [...e.dataTransfer.files].filter((f) => isMarkdownName(f.name));
+    // Any file: text is detected by content, office files by signature; others are reported.
+    const files = [...e.dataTransfer.files];
     if (files.length) await addFiles(await Promise.all(files.map(fileToPicked)));
   };
 
@@ -125,6 +130,10 @@ export function AppShell() {
       onNewDocument={() => {
         setMobileNav(false);
         newDocument();
+      }}
+      onNewFile={() => {
+        setMobileNav(false);
+        setNewFileOpen(true);
       }}
       onOpenFile={() => setOpenFilesOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)}
@@ -174,7 +183,6 @@ export function AppShell() {
           {active ? (
             <DocumentView
               id={active}
-              onShowHistory={() => setHistoryOpen(true)}
               outlineToggle={
                 roomForOutline && (
                   <button type="button" className="icon-button" onClick={() => prefs.set({ outlineOpen: !prefs.outlineOpen })} aria-label={t('a11y.toggleOutline')} aria-expanded={prefs.outlineOpen}>
@@ -222,7 +230,7 @@ export function AppShell() {
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       <SetupDialog />
       <OpenFilesDialog open={openFilesOpen} onOpenChange={setOpenFilesOpen} />
-      {active && <HistoryDialog id={active} open={historyOpen} onOpenChange={setHistoryOpen} />}
+      {newFileOpen && <NewFileDialog onClose={() => setNewFileOpen(false)} />}
     </div>
   );
 }

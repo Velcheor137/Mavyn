@@ -1,6 +1,6 @@
-import { compareNames, type DocumentMeta } from '@mdr/core';
+import { compareNames, isTableName, textFormat, type DocumentMeta } from '@mdr/core';
 import { useTranslation } from '@mdr/i18n';
-import { Clock, FileText, Files, FolderOpen, FolderPlus, Hash, Plus, RotateCcw, Search, Settings, Star, Trash2, X } from 'lucide-react';
+import { Clock, FileCode2, FileImage, FileSpreadsheet, FileText, FileType, Files, FolderOpen, FolderPlus, Hash, Plus, RotateCcw, Search, Settings, Star, Trash2, X } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
 import { useRelativeTime } from '../hooks.ts';
 import { SyncStatus } from './SyncStatus.tsx';
@@ -8,7 +8,7 @@ import { FolderTree } from './FolderTree.tsx';
 import { LibraryDialog, type LibraryAction } from './LibraryDialogs.tsx';
 import { openDocument, purgeDocument, restoreDocument, search, setSection, useWorkspace, notifyError, type Section } from '../workspace.ts';
 
-export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDocument(): void; onOpenFile(): void; onOpenSettings(): void }) {
+export function Sidebar({ onNewDocument, onNewFile, onOpenFile, onOpenSettings }: { onNewDocument(): void; onNewFile(): void; onOpenFile(): void; onOpenSettings(): void }) {
   const { t, i18n } = useTranslation();
   const [action, setAction] = useState<LibraryAction | null>(null);
   const documents = useWorkspace((s) => s.documents);
@@ -64,6 +64,9 @@ export function Sidebar({ onNewDocument, onOpenFile, onOpenSettings }: { onNewDo
         <button type="button" className="button button-primary flex-1" onClick={onNewDocument}>
           <Plus size={15} aria-hidden />
           {t('sidebar.newDocument')}
+        </button>
+        <button type="button" className="icon-button" onClick={onNewFile} aria-label={t('sidebar.newFile')} title={`${t('sidebar.newFile')} (Alt+Shift+N)`}>
+          <FileCode2 size={16} aria-hidden />
         </button>
         <button type="button" className="icon-button" onClick={onOpenFile} aria-label={t('sidebar.openFile')} title={`${t('sidebar.openFile')} (Ctrl+O)`}>
           <FolderOpen size={16} aria-hidden />
@@ -190,7 +193,7 @@ function DocItem({ doc, active, trash, showFileName }: { doc: DocumentMeta; acti
     <li className="doc-row">
       <button type="button" className={`doc-item ${active ? 'active' : ''}`} onClick={() => !trash && void openDocument(doc.id)} aria-current={active ? 'true' : undefined} disabled={trash}>
         <span className="doc-title">
-          <FileText size={14} aria-hidden className="muted shrink-0" />
+          <DocIcon mime={doc.kind === 'file' ? doc.mime : undefined} fileName={doc.fileName} />
           <span className="truncate">{doc.title || t('document.untitled')}</span>
           {doc.favorite && <Star size={12} aria-hidden className="text-accent shrink-0" fill="currentColor" />}
         </span>
@@ -230,4 +233,12 @@ function Highlighted({ text, ranges }: { text: string; ranges: Array<[number, nu
   });
   parts.push(text.slice(pos));
   return <span className="doc-snippet">{parts}</span>;
+}
+
+/** Text documents and each kind of view-only file get a distinct icon. */
+function DocIcon({ mime, fileName }: { mime: string | undefined; fileName: string }) {
+  const Icon = !mime
+    ? isTableName(fileName) ? FileSpreadsheet : textFormat(fileName) === 'plain' ? FileCode2 : FileText
+    : mime === 'application/pdf' ? FileImage : mime.includes('spreadsheet') ? FileSpreadsheet : FileType;
+  return <Icon size={14} aria-hidden className="muted shrink-0" />;
 }

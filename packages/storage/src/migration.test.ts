@@ -10,7 +10,7 @@ describe.runIf(Boolean(process.env.MAVYN_STORAGE_BRIDGE))('legacy migration into
   const target = (beforeSend?: (request: Record<string, unknown>) => void) => { const backend = nativeTestBackend(beforeSend); opened.push(backend); return backend; };
   afterEach(() => { for (const backend of opened.splice(0)) backend.close(); });
 
-  it('copies exact contents, history, folders and settings once while keeping the original', async () => {
+  it('copies exact contents, folders and settings once while keeping the original', async () => {
     const sourceName = `native-migration-${crypto.randomUUID()}`;
     const source = await IndexedDbBackend.open(sourceName);
     const old = new Library(source);
@@ -24,7 +24,6 @@ describe.runIf(Boolean(process.env.MAVYN_STORAGE_BRIDGE))('legacy migration into
     expect((await next.readContent(document.id)).text).toBe('# Ёж\r\n\r\n- [x] a\r\n');
     expect((await next.getDocument(document.id)).bom).toBe(true);
     expect(await next.listFolders()).toEqual([folder]);
-    expect(await next.listRevisions(document.id)).toHaveLength(2);
     expect(await next.getSetting('hello')).toEqual({ value: 'Привет' });
     const backup = await IndexedDbBackend.open(sourceName);
     expect((await new Library(backup).readContent(document.id)).text).toBe('# Ёж\r\n\r\n- [x] a\r\n');
@@ -40,7 +39,7 @@ describe.runIf(Boolean(process.env.MAVYN_STORAGE_BRIDGE))('legacy migration into
     const document = await old.createDocument({ text: 'keep me', fileName: 'keep.md' });
     let interrupted = true;
     const native = target((request) => {
-      if (interrupted && request.op === 'put' && request.store === 'revisions') throw new AppError('storage.failed');
+      if (interrupted && request.op === 'put' && request.store === 'contents') throw new AppError('storage.failed');
     });
     await expect(migrateLegacy(async () => source, native)).rejects.toMatchObject({ code: 'storage.failed' });
     expect(await native.legacyStatus()).toEqual({ empty: true, legacyImported: false });

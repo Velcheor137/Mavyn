@@ -36,7 +36,7 @@ the built libraries and APK rather than assuming compiler defaults provide align
 - **Export:** `ACTION_CREATE_DOCUMENT` creates a new file for Markdown, HTML or other exports.
   Cancelling either picker is a normal result, not an application error.
 - Bytes stay unchanged except for the requested edits, including UTF-8 BOM and CRLF.
-  The bridge bounds individual files/exports to 16 MiB.
+  The bridge bounds text files to 256 MiB and Word/Excel/OpenDocument/PDF files to 50 MiB.
 - Linked saving reads the current content and checks SHA256, then checks again through the
   writable descriptor. Equal size/time is never considered proof that a file is unchanged.
   A changed document raises the existing conflict UI; reloading reads the provider again.

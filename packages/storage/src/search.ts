@@ -27,12 +27,17 @@ interface Indexed {
  * tokenization with case/ё folding and prefix matching, so `задач` finds `задачи` and `Задача`.
  * No stemming: documented limitation, consistent across Russian and English.
  */
+/** Characters of a text document that are indexed for search. */
+export const MAX_INDEXED_CHARS = 4 * 1024 * 1024;
+
 export class SearchIndex {
   private readonly docs = new Map<string, Indexed>();
   private readonly postings = new Map<string, Set<string>>();
 
-  upsert(documentId: string, title: string, text: string): void {
+  upsert(documentId: string, title: string, fullText: string): void {
     this.remove(documentId);
+    // Large logs and code are searchable by their beginning only (matches the native index).
+    const text = fullText.length > MAX_INDEXED_CHARS ? fullText.slice(0, MAX_INDEXED_CHARS) : fullText;
     const tokens = new Set([...tokenize(title), ...tokenize(text)]);
     this.docs.set(documentId, { title, text, folded: foldKey(text), tokens });
     for (const token of tokens) {

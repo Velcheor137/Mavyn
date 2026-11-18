@@ -18,8 +18,8 @@ for (const [name, makeBackend] of backends) {
     async function setup(now = { t: Date.parse('2026-01-01T00:00:00Z') }) {
       const backend = await makeBackend();
       opened.push(backend);
-      const library = new Library(backend, { now: () => now.t, revisionIntervalMs: 60_000 });
-      return { library, now };
+      const library = new Library(backend, { now: () => now.t });
+      return { library, now, backend };
     }
 
     it('creates, reads and saves with compare-and-swap', async () => {
@@ -36,83 +36,19 @@ for (const [name, makeBackend] of backends) {
       expect((await library.readContent(meta.id)).version).toBe(v2);
     });
 
-    it('groups rapid saves into one revision and cuts a new one after the interval', async () => {
-      const { library, now } = await setup();
+    it('keeps only the current text and drops replaced content unless another document shares it', async () => {
+      const { library, backend } = await setup();
+      const contents = () => backend.transaction(['contents'], 'readonly', (tx) => tx.getAll<{ hash: string; text: string }>('contents'));
       const meta = await library.createDocument({ text: 'v0', fileName: 'a.md' });
-      let v = meta.contentHash;
-      v = await library.saveContent(meta.id, 'v1', v);
-      now.t += 10_000;
+      const twin = await library.createDocument({ text: 'v0', fileName: 'b.md' });
+      let v = await library.saveContent(meta.id, 'v1', meta.contentHash);
+      // 'v0' stays: the twin still uses it.
+      expect((await contents()).map((c) => c.text).sort()).toEqual(['v0', 'v1']);
       v = await library.saveContent(meta.id, 'v2', v);
-      expect((await library.listRevisions(meta.id)).map((r) => r.reason)).toEqual(['edit', 'import']);
-      now.t += 61_000;
-      v = await library.saveContent(meta.id, 'v3', v);
-      const revisions = await library.listRevisions(meta.id);
-      expect(revisions).toHaveLength(3);
-      expect(await library.readRevision(revisions[1]!.id)).toBe('v2');
-      expect(await library.readRevision(revisions[2]!.id)).toBe('v0');
-    });
-
-    it('restores an old revision as a new revision', async () => {
-      const { library } = await setup();
-      const meta = await library.createDocument({ text: 'original', fileName: 'a.md' });
-      await library.saveContent(meta.id, 'changed', meta.contentHash);
-      const importRev = (await library.listRevisions(meta.id)).find((r) => r.reason === 'import')!;
-      await library.restoreRevision(meta.id, importRev.id);
-      expect((await library.readContent(meta.id)).text).toBe('original');
-      expect((await library.listRevisions(meta.id)).map((r) => r.reason)).toEqual(['restore', 'edit', 'import']);
-    });
-
-    it('rejects restoring a revision belonging to another document without changing either history', async () => {
-      const { library } = await setup();
-      const target = await library.createDocument({ text: 'keep target', fileName: 'target.md' });
-      const other = await library.createDocument({ text: 'other content', fileName: 'other.md' });
-      const before = await library.listRevisions(target.id);
-
-      await expect(library.restoreRevision(target.id, other.headRevisionId)).rejects.toMatchObject({ code: 'document.not_found' });
-      expect((await library.readContent(target.id)).text).toBe('keep target');
-      expect((await library.readContent(other.id)).text).toBe('other content');
-      expect(await library.listRevisions(target.id)).toEqual(before);
-      expect(await library.listRevisions(other.id)).toHaveLength(1);
-    });
-
-    it('keeps all history by default and persists the selected retention policy', async () => {
-      const { library } = await setup();
-      expect(await library.getHistoryRetention()).toBe('all');
-      await library.setHistoryRetention('balanced');
-      expect(await library.getHistoryRetention()).toBe('balanced');
-      await library.setHistoryRetention('all');
-      const doc = await library.createDocument({ text: 'original', fileName: 'history.md' });
-      await library.saveContent(doc.id, 'edited', doc.contentHash);
-      expect(await library.pruneHistory()).toBe(0);
-      expect(await library.listRevisions(doc.id)).toHaveLength(2);
-    });
-
-    it('prunes old history into daily buckets while preserving initial/head, trash and shared contents', async () => {
-      const end = Date.parse('2026-11-07T12:00:00Z');
-      const day = 86_400_000;
-      const { library, now } = await setup({ t: end - 400 * day });
-      const doc = await library.createDocument({ text: 'initial', fileName: 'history.md' });
-      now.t = end - 399 * day;
-      let version = await library.saveContent(doc.id, 'old shared', doc.contentHash);
-      const shared = await library.createDocument({ text: 'old shared', fileName: 'shared.md' });
-      now.t = end - 40 * day;
-      version = await library.saveContent(doc.id, 'earlier same day', version);
-      now.t += 3_600_000;
-      version = await library.saveContent(doc.id, 'daily survivor', version);
-      now.t = end - 5 * day;
-      version = await library.saveContent(doc.id, 'recent', version);
-      now.t = end;
-      await library.saveContent(doc.id, 'head', version);
-      await library.trash(shared.id);
-      await library.setHistoryRetention('balanced');
-      expect(await library.pruneHistory()).toBe(2);
-      const kept = await library.listRevisions(doc.id);
-      expect(await Promise.all(kept.map((revision) => library.readRevision(revision.id)))).toEqual(['head', 'recent', 'daily survivor', 'initial']);
-      expect(kept[2]?.parentRevisionId).toBe(kept[3]?.id);
-      expect((await library.readContent(shared.id)).text).toBe('old shared');
-      expect(await library.listRevisions(shared.id)).toHaveLength(1);
-      await library.restoreRevision(doc.id, kept[2]!.id);
-      expect((await library.readContent(doc.id)).text).toBe('daily survivor');
+      expect((await contents()).map((c) => c.text).sort()).toEqual(['v0', 'v2']);
+      expect((await library.readContent(meta.id)).version).toBe(v);
+      expect((await library.readContent(twin.id)).text).toBe('v0');
+      expect(meta).not.toHaveProperty('headRevisionId');
     });
 
     it('trashes, restores and purges', async () => {
@@ -200,7 +136,6 @@ for (const [name, makeBackend] of backends) {
       expect((await library.listFolders()).find((f) => f.id === child.id)?.parentId).toBe(b.id);
       expect((await library.getDocument(doc.id)).remote).toEqual(remote);
       expect((await library.readContent(doc.id)).text).toBe('keep\r\n');
-      expect(await library.listRevisions(doc.id)).toHaveLength(1);
       await library.updateMeta(doc.id, { folderId: null });
       expect((await library.getDocument(doc.id)).folderId).toBeNull();
     });
@@ -225,6 +160,49 @@ for (const [name, makeBackend] of backends) {
       await library.createDocument({ text: 'a', fileName: 'a.md', tags: ['работа', 'alpha'] });
       await library.createDocument({ text: 'b', fileName: 'b.md', tags: ['Работа'] });
       expect(await library.listTags('ru')).toEqual([{ tag: 'работа', count: 2 }, { tag: 'alpha', count: 1 }]);
+    });
+
+    it('stores binary documents with name-only search', async () => {
+      const { library } = await setup();
+      const bytes = new Uint8Array(70_000).map((_, i) => (i * 31) & 255);
+      bytes.set(new TextEncoder().encode('%PDF-1.7'));
+      const meta = await library.createFileDocument({ bytes, fileName: 'Квартальный отчёт.pdf', mime: 'application/pdf', tags: ['Работа'] });
+      expect(meta).toMatchObject({ kind: 'file', mime: 'application/pdf', title: 'Квартальный отчёт', bom: false, source: { kind: 'imported' } });
+      expect(meta.contentHash).toBe(await sha256Hex(bytes));
+
+      const read = await library.readFile(meta.id);
+      expect(read.bytes).toEqual(bytes);
+      await expect(library.readContent(meta.id)).rejects.toMatchObject({ code: 'document.not_text' });
+      await expect(library.saveContent(meta.id, 'text', meta.contentHash)).rejects.toMatchObject({ code: 'document.not_text' });
+      await expect(library.createFileDocument({ bytes, fileName: 'x.exe', mime: 'application/x-msdownload' })).rejects.toMatchObject({ code: 'file.unsupported' });
+
+      const text = await library.createDocument({ text: 'отчёт в тексте', fileName: 'a.md' });
+      await expect(library.readFile(text.id)).rejects.toMatchObject({ code: 'document.not_file' });
+
+      expect((await library.search('квартальн')).map((h) => h.documentId)).toEqual([meta.id]);
+      const renamed = await library.updateMeta(meta.id, { fileName: 'Годовой.pdf' });
+      expect(renamed.title).toBe('Годовой');
+      expect((await library.search('годовой')).map((h) => h.documentId)).toEqual([meta.id]);
+      // The type's extension is kept so the copy still opens as a PDF everywhere.
+      expect((await library.updateMeta(meta.id, { fileName: 'Без расширения' })).fileName).toBe('Без расширения.pdf');
+      expect((await library.updateMeta(meta.id, { fileName: 'Годовой.pdf' })).fileName).toBe('Годовой.pdf');
+
+      await library.trash(meta.id);
+      await library.restore(meta.id);
+      expect((await library.search('годовой')).map((h) => h.documentId)).toEqual([meta.id]);
+    });
+
+    it('shares identical file bytes and purges them with the last document', async () => {
+      const { library } = await setup();
+      const bytes = new TextEncoder().encode('%PDF-1.4 same bytes');
+      const a = await library.createFileDocument({ bytes, fileName: 'a.pdf', mime: 'application/pdf' });
+      const b = await library.createFileDocument({ bytes, fileName: 'b.pdf', mime: 'application/pdf' });
+      await library.trash(a.id);
+      await library.purge(a.id);
+      expect((await library.readFile(b.id)).bytes).toEqual(bytes);
+      await library.trash(b.id);
+      await library.purge(b.id);
+      await expect(library.readFile(b.id)).rejects.toMatchObject({ code: 'document.not_found' });
     });
   });
 }
@@ -265,7 +243,7 @@ describe('sync support', () => {
     expect(seen).toEqual([[meta.id], [meta.id], [meta.id]]);
   });
 
-  it('upgrades a version-1 IndexedDB database without losing documents', async () => {
+  it('upgrades a version-1 IndexedDB database, dropping old history but no documents', async () => {
     const { openDB } = await import('idb');
     const name = `upgrade-${Date.now()}`;
     const v1 = await openDB(name, 1, {
@@ -276,13 +254,24 @@ describe('sync support', () => {
         }
       },
     });
-    const old = new Library(await (async () => {
-      v1.close();
-      return IndexedDbBackend.open(name);
-    })());
-    const meta = await old.createDocument({ text: 'kept', fileName: 'a.md' });
-    await old.putSyncBase({ documentId: meta.id, hash: 'h', text: 'kept' });
-    expect((await old.readContent(meta.id)).text).toBe('kept');
+    const old = { id: 'old', libraryId: 'local', folderId: null, title: 'Old', fileName: 'old.md', source: { kind: 'imported' }, headRevisionId: 'r2', contentHash: 'now', bom: false, tags: [], favorite: false, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', openedAt: null, deletedAt: null };
+    await v1.put('documents', old);
+    await v1.put('contents', { hash: 'now', text: 'current' });
+    await v1.put('contents', { hash: 'before', text: 'only in history' });
+    await v1.put('revisions', { id: 'r1', documentId: 'old', contentHash: 'before' });
+    v1.close();
+    const backend = await IndexedDbBackend.open(name);
+    const upgraded = new Library(backend);
+    expect((await upgraded.readContent('old')).text).toBe('current');
+    const texts = await backend.transaction(['contents'], 'readonly', (tx) => tx.getAll<{ text: string }>('contents'));
+    expect(texts.map((c) => c.text)).toEqual(['current']);
+    const raw = await openDB(name);
+    expect([...raw.objectStoreNames]).not.toContain('revisions');
+    raw.close();
+    const meta = await upgraded.createDocument({ text: 'kept', fileName: 'a.md' });
+    await upgraded.putSyncBase({ documentId: meta.id, hash: 'h', text: 'kept' });
+    expect((await upgraded.readContent(meta.id)).text).toBe('kept');
+    backend.close();
   });
 });
 
@@ -299,7 +288,6 @@ describe('adoptLegacyLibrary', () => {
     const user = new Library(userBackend);
     expect((await user.readContent(doc.id)).text).toBe('# Kept\n');
     expect((await user.getDocument(doc.id)).folderId).toBe(folder.id);
-    expect((await user.listRevisions(doc.id)).length).toBe(1);
 
     // A non-empty target is never merged into.
     expect(await adoptLegacyLibrary(legacyBackend, userBackend)).toBe(false);

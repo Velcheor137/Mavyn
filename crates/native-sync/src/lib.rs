@@ -11,7 +11,13 @@ mod windows;
 pub use windows::WindowsVault;
 
 pub type Result<T> = std::result::Result<T, &'static str>;
-const MAX_BODY: u64 = 32 * 1024 * 1024 + 65536;
+/// JSON requests carry whole text documents (up to 256 MiB on the server); JSON escaping can
+/// grow them, so allow twice that plus room for metadata.
+const MAX_BODY: u64 = 2 * 256 * 1024 * 1024 + 65536;
+/// Binary documents (docx, xlsx, ods, pdf): 50 MiB plus room for an error body.
+const MAX_FILE_BODY: u64 = 50 * 1024 * 1024 + 65536;
+/// A 50 MiB upload or download on a slow link needs far longer than JSON requests.
+const FILE_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub trait Vault {
     fn get(&self, key: &str) -> Result<Option<String>>;
@@ -34,6 +40,18 @@ pub struct Response {
     pub body: Value,
 }
 
+/// Raw-bytes exchange for binary documents: upload (`POST …/files`) and download (`GET …/file`).
+pub struct BinaryRequest {
+    pub method: String,
+    pub path: String,
+    pub op_id: Option<String>,
+}
+
+pub struct BinaryResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
 pub fn normalize_url(input: &str) -> Result<String> {
     let url = Url::parse(input.trim()).map_err(|_| "server.invalid_url")?;
     let loopback = matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"));
@@ -54,18 +72,64 @@ pub fn session_key(base: &str) -> String {
     hex::encode(Sha256::digest(base.as_bytes()))
 }
 
+/// Query keys the upload route accepts (all URL-encoded scalars).
+const UPLOAD_QUERY: [&str; 5] = ["id", "file_name", "folder_id", "sha256", "mime"];
+/// Query of `PUT /documents/{id}/file` (replacing an edited binary document's bytes).
+const REPLACE_QUERY: &[&str] = &["base_revision_id", "sha256"];
+
 fn route(base: &str, request: &Request) -> Result<Url> {
-    if !request.path.starts_with("/api/v1/") || request.path.len() > 4096 {
+    route_for(
+        base,
+        &request.method,
+        &request.path,
+        request.op_id.as_deref(),
+        request.body.is_some(),
+        false,
+    )
+}
+
+/// Validates a request against the protocol allow-list. `binary` selects the raw-bytes routes,
+/// which are never reachable through the JSON transport and vice versa.
+fn route_for(
+    base: &str,
+    method: &str,
+    path: &str,
+    op_id: Option<&str>,
+    has_json_body: bool,
+    binary: bool,
+) -> Result<Url> {
+    if !path.starts_with("/api/v1/") || path.len() > 4096 {
         return Err("network.failed");
     }
-    let url = Url::parse(&format!("{base}{}", request.path)).map_err(|_| "network.failed")?;
+    let url = Url::parse(&format!("{base}{path}")).map_err(|_| "network.failed")?;
     let parts: Vec<_> = url
         .path()
         .trim_start_matches("/api/v1/")
         .split('/')
         .collect();
-    let method = request.method.as_str();
     let id = |value: &str| uuid::Uuid::parse_str(value).is_ok();
+    let upload = matches!(parts.as_slice(), ["libraries", library, "files"] if id(library) && method == "POST");
+    let download = matches!(parts.as_slice(), ["documents", document, "file" | "original"] if id(document) && method == "GET");
+    let replace = matches!(parts.as_slice(), ["documents", document, "file"] if id(document) && method == "PUT");
+    if binary {
+        let query_ok = if upload {
+            url.query_pairs()
+                .all(|(key, value)| UPLOAD_QUERY.contains(&key.as_ref()) && value.len() <= 1024)
+        } else if replace {
+            url.query_pairs()
+                .all(|(key, value)| REPLACE_QUERY.contains(&key.as_ref()) && value.len() <= 128)
+        } else {
+            url.query().is_none()
+        };
+        if !(upload || download || replace)
+            || !query_ok
+            || url.fragment().is_some()
+            || op_id.is_some_and(|value| !id(value))
+        {
+            return Err("network.failed");
+        }
+        return Ok(url);
+    }
     let allowed = match parts.as_slice() {
         ["health"] => method == "GET",
         ["setup"] => matches!(method, "GET" | "POST"),
@@ -86,9 +150,9 @@ fn route(base: &str, request: &Request) -> Result<Url> {
             && (!changes
                 || url
                     .query_pairs()
-                    .any(|(key, value)| key != "cursor" || value.len() > 2048))
-        || request.op_id.as_ref().is_some_and(|value| !id(value))
-        || method == "GET" && request.body.is_some()
+                    .any(|(key, value)| !(key == "cursor" && value.len() <= 2048)))
+        || op_id.is_some_and(|value| !id(value))
+        || method == "GET" && has_json_body
     {
         return Err("network.failed");
     }
@@ -97,6 +161,67 @@ fn route(base: &str, request: &Request) -> Result<Url> {
 
 pub struct Client(HttpClient);
 impl Client {
+    /// Uploads or downloads a binary document. Bytes pass through unchanged; the status and the
+    /// server's (JSON error or document) body are returned as they are.
+    pub fn request_bytes(
+        &self,
+        base: &str,
+        request: &BinaryRequest,
+        body: Option<&[u8]>,
+        vault: &dyn Vault,
+    ) -> Result<BinaryResponse> {
+        let base = normalize_url(base)?;
+        let url = route_for(
+            &base,
+            &request.method,
+            &request.path,
+            request.op_id.as_deref(),
+            false,
+            true,
+        )?;
+        if body.is_some_and(|b| b.len() as u64 > MAX_FILE_BODY) {
+            return Err("file.too_large");
+        }
+        let token = vault.get(&session_key(&base))?;
+        let method = request.method.parse().map_err(|_| "network.failed")?;
+        let mut builder = self
+            .0
+            .request(method, url)
+            .header("x-sync-protocol", "2")
+            .timeout(FILE_TIMEOUT);
+        if let Some(token) = &token {
+            builder = builder.bearer_auth(token);
+        }
+        if let Some(op_id) = &request.op_id {
+            builder = builder.header("idempotency-key", op_id);
+        }
+        if let Some(body) = body {
+            builder = builder
+                .header("content-type", "application/octet-stream")
+                .body(body.to_vec());
+        }
+        let response = builder.send().map_err(|_| "sync.offline")?;
+        if response.status().is_redirection() {
+            return Err("network.failed");
+        }
+        let status = response.status().as_u16();
+        let mut bytes = Vec::new();
+        response
+            .take(MAX_FILE_BODY + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "sync.offline")?;
+        if bytes.len() as u64 > MAX_FILE_BODY {
+            return Err("file.too_large");
+        }
+        if status == 401 {
+            vault.delete(&session_key(&base))?;
+        }
+        Ok(BinaryResponse {
+            status,
+            body: bytes,
+        })
+    }
+
     pub fn new() -> Result<Self> {
         HttpClient::builder()
             .redirect(Policy::none())
@@ -124,7 +249,16 @@ impl Client {
         }
         let outcome = (|| {
             let method = request.method.parse().map_err(|_| "network.failed")?;
-            let mut builder = self.0.request(method, url).header("x-sync-protocol", "1");
+            let mut builder = self.0.request(method, url).header("x-sync-protocol", "2");
+            // Reading a whole text document (up to 256 MiB) may take long on a slow link.
+            if request.method == "GET"
+                && request
+                    .path
+                    .trim_start_matches('/')
+                    .starts_with("documents/")
+            {
+                builder = builder.timeout(FILE_TIMEOUT);
+            }
             if !login {
                 if let Some(token) = &token {
                     builder = builder.bearer_auth(token);
@@ -136,7 +270,11 @@ impl Client {
             if let Some(body) = &request.body {
                 let body = serde_json::to_vec(body).map_err(|_| "network.failed")?;
                 if body.len() as u64 > MAX_BODY {
-                    return Err("file.unsupported");
+                    return Err("file.too_large");
+                }
+                // A large text document needs as long as a file upload on a slow link.
+                if body.len() > 1024 * 1024 {
+                    builder = builder.timeout(FILE_TIMEOUT);
                 }
                 builder = builder
                     .header("content-type", "application/json")
@@ -159,7 +297,7 @@ impl Client {
                 .read_to_end(&mut bytes)
                 .map_err(|_| "network.failed")?;
             if bytes.len() as u64 > MAX_BODY {
-                return Err("file.unsupported");
+                return Err("file.too_large");
             }
             let mut body: Value =
                 serde_json::from_slice(&bytes).map_err(|_| "server.unavailable")?;

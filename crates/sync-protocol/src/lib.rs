@@ -7,7 +7,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Sent by clients in the `X-Sync-Protocol` header.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// 2: editable binary documents, no version history, file encodings. Clients of protocol 1 would
+/// treat changed files as immutable, so they are refused (`sync.protocol_unsupported`).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorBody {
@@ -111,6 +113,10 @@ pub struct CreateDocumentRequest {
     pub content: String,
     #[serde(default)]
     pub folder_id: Option<Uuid>,
+    /// WHATWG encoding of the file on disk (`windows-1251`, …); absent or `utf-8` for UTF-8. The
+    /// content itself is always UTF-8; clients use this when writing the file back.
+    #[serde(default)]
+    pub encoding: Option<String>,
 }
 
 /// Compare-and-swap content update. Rejected with `sync.conflict` unless `base_revision_id` is
@@ -151,17 +157,6 @@ pub struct ConflictDetails {
     pub content_hash: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RevisionInfo {
-    pub id: Uuid,
-    pub parent_revision_id: Option<Uuid>,
-    pub content_hash: String,
-    pub author: Option<String>,
-    pub reason: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-}
-
 /// Field-wise compare-and-swap of a document's name and location. A field is changed only when the
 /// server still has its `base_*` value; otherwise the server value stays (the response shows it).
 #[derive(Debug, Deserialize)]
@@ -170,6 +165,11 @@ pub struct UpdateDocumentMetaRequest {
     pub base_folder_id: Option<Uuid>,
     pub file_name: String,
     pub folder_id: Option<Uuid>,
+    /// File encoding, compare-and-swapped like the name; absent leaves it unchanged.
+    #[serde(default)]
+    pub base_encoding: Option<String>,
+    #[serde(default)]
+    pub encoding: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,15 +1,34 @@
 import { AppError, foldKey, type ErrorCode } from '@mdr/core';
-import { STORE_KEYS, type Backend, type StoreName, type Tx } from './backend.ts';
+import { STORE_KEYS, type Backend, type FileRow, type StoreName, type Tx } from './backend.ts';
 import { makeSnippet, tokenize, type SearchHit } from './search.ts';
 
 export type NativeCall = (request: Record<string, unknown>) => Promise<unknown>;
 export type LegacySnapshot = Record<StoreName, unknown[]>;
 
+/**
+ * Binary channel for the `files` store: bytes travel as raw IPC payloads instead of JSON/base64.
+ * `put` sends `bytes`; `get` resolves to the stored bytes, or an empty buffer when absent
+ * (supported files are never empty).
+ */
+export type NativeFileCall = (request: { op: 'putFile' | 'getFile'; token: string; hash: string }, bytes?: Uint8Array) => Promise<ArrayBuffer | Uint8Array | null>;
+
 /** Platform-neutral IPC adapter; Tauri is injected only by the native app entry point. */
 export class NativeBackend implements Backend {
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
-  constructor(private readonly invoke: NativeCall, private readonly onClose?: () => void) {}
+  constructor(private readonly invoke: NativeCall, private readonly onClose?: () => void, private readonly fileCall?: NativeFileCall) {}
+
+  private async callFile(request: Parameters<NativeFileCall>[0], bytes?: Uint8Array): Promise<Uint8Array> {
+    if (!this.fileCall) throw new AppError('storage.failed', { reason: 'no_file_channel' });
+    try {
+      const result = await this.fileCall(request, bytes);
+      return result instanceof Uint8Array ? result : new Uint8Array(result ?? new ArrayBuffer(0));
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      const code = (error as { code?: ErrorCode } | null)?.code;
+      throw new AppError(code ?? 'storage.failed', {}, error);
+    }
+  }
 
   private async call<T>(request: Record<string, unknown>): Promise<T> {
     try { return await this.invoke(request) as T; }
@@ -40,12 +59,24 @@ export class NativeBackend implements Backend {
       if (!active) return Promise.reject<T>(new AppError('storage.failed', { reason: 'transaction_finished' }));
       return this.call<T>({ op, token, ...args });
     };
+    const file = (op: 'putFile' | 'getFile', hash: string, bytes?: Uint8Array) => {
+      if (!active) return Promise.reject<Uint8Array>(new AppError('storage.failed', { reason: 'transaction_finished' }));
+      return this.callFile({ op, token, hash }, bytes);
+    };
     const tx: Tx = {
-      get: async <T>(store: StoreName, key: string) => (await request<T | null>('get', { store, key })) ?? undefined,
+      get: async <T>(store: StoreName, key: string) => {
+        if (store !== 'files') return (await request<T | null>('get', { store, key })) ?? undefined;
+        const bytes = await file('getFile', key);
+        return (bytes.length ? { hash: key, size: bytes.length, bytes } satisfies FileRow : undefined) as T | undefined;
+      },
+      // For `files` the native side lists `{ hash, size }` only: bytes are never bulk-loaded.
       getAll: <T>(store: StoreName) => request<T[]>('all', { store }),
-      put: async <T>(store: StoreName, value: T) => { await request('put', { store, value }); },
+      put: async <T>(store: StoreName, value: T) => {
+        if (store !== 'files') { await request('put', { store, value }); return; }
+        const row = value as unknown as FileRow;
+        await file('putFile', row.hash, row.bytes);
+      },
       delete: async (store, key) => { await request('delete', { store, key }); },
-      revisionsOf: <T>(documentId: string) => request<T[]>('revisions', { documentId }),
     };
     try {
       const result = await fn(tx, token);
@@ -78,7 +109,7 @@ export class NativeBackend implements Backend {
         if ((await tx.getAll(store)).length) throw new AppError('storage.migration_conflict');
       }
       for (const store of Object.keys(STORE_KEYS) as StoreName[]) {
-        for (const value of snapshot[store]) await tx.put(store, value);
+        for (const value of snapshot[store] ?? []) await tx.put(store, value);
       }
       await this.call({ op: 'markImported', token });
     }));

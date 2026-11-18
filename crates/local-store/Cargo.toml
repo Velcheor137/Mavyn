@@ -2,7 +2,7 @@
 name = "mavyn-local-store"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 rust-version = "1.85"
 
 # Native SQLite resolves independently from the server's SQLx SQLite dependency.

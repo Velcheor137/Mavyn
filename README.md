@@ -90,7 +90,7 @@ COOKIE_SECURE=false
 TRUST_PROXY=false
 BIND_HOST=127.0.0.1
 HTTP_PORT=8080
-MAX_DOCUMENT_BYTES=16777216
+MAX_DOCUMENT_BYTES=268435456
 SESSION_TTL_DAYS=30
 RUST_LOG=info
 ```
@@ -290,3 +290,10 @@ npm test
 | [Проверки](docs/testing.md) | Проверка веб-версии, сервера и локального хранилища. |
 | [Участие в разработке](docs/contributing.md) | Правила внесения изменений. |
 | [AGENTS.md](AGENTS.md) | Правила работы с репозиторием. |
+
+## Лицензия
+
+Mavyn распространяется на условиях [GNU GPL версии 3](LICENSE) (`GPL-3.0-only`). Причина — движок
+формул [HyperFormula](https://hyperformula.handsontable.com/) в редакторе таблиц, который доступен под
+GPLv3 (используется с ключом `gpl-v3`). Остальные зависимости — под MIT, Apache-2.0 и совместимыми
+с GPLv3 лицензиями.

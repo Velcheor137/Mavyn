@@ -8,6 +8,7 @@ pub mod routes;
 pub mod state;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::handler::Handler;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -56,7 +57,10 @@ async fn protocol_guard(request: Request, next: Next) -> Response {
 
 pub fn app(state: AppState) -> Router {
     use routes::{auth, documents, folders, libraries};
-    let body_limit = state.config.max_document_bytes + 64 * 1024;
+    // JSON metadata everywhere; only routes carrying document text get the large limit. JSON escaping
+    // can grow text (quotes, backslashes), so allow twice the size; `check_size` enforces the real one.
+    let body_limit = 1024 * 1024;
+    let text_limit = DefaultBodyLimit::max(state.config.max_document_bytes * 2 + 64 * 1024);
 
     let api = Router::new()
         .route("/health", get(health))
@@ -78,7 +82,12 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/libraries/{id}/documents",
-            get(documents::list).post(documents::create),
+            get(documents::list).post(documents::create.layer(text_limit)),
+        )
+        // Binary uploads get their own body limit; the global one below stays at documents' size.
+        .route(
+            "/libraries/{id}/files",
+            post(documents::upload_file).layer(DefaultBodyLimit::max(state.config.max_file_bytes)),
         )
         .route("/libraries/{id}/folders", post(folders::create))
         .route(
@@ -93,8 +102,20 @@ pub fn app(state: AppState) -> Router {
                 .patch(documents::update_meta)
                 .delete(documents::delete),
         )
-        .route("/documents/{id}/content", put(documents::update_content))
-        .route("/documents/{id}/revisions", get(documents::revisions))
+        .route(
+            "/documents/{id}/content",
+            put(documents::update_content.layer(text_limit)),
+        )
+        .route(
+            "/documents/{id}/file",
+            get(documents::download_file).put(
+                documents::replace_file.layer(DefaultBodyLimit::max(state.config.max_file_bytes)),
+            ),
+        )
+        .route(
+            "/documents/{id}/original",
+            get(documents::download_original),
+        )
         .fallback(|| async { ApiError::not_found(codes::ROUTE_NOT_FOUND) })
         .layer(middleware::from_fn(protocol_guard))
         .layer(SetResponseHeaderLayer::overriding(

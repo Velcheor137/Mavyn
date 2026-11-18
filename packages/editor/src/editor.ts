@@ -1,7 +1,7 @@
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { defaultKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language';
+import { bracketMatching, HighlightStyle, indentOnInput, LanguageDescription, syntaxHighlighting } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
 import { highlightSelectionMatches, search, searchKeymap } from '@codemirror/search';
 import { Annotation, Compartment, EditorState, type Extension } from '@codemirror/state';
@@ -16,7 +16,7 @@ import {
   placeholder as placeholderExt,
 } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
-import type { DocumentSession, TextEdit } from '@mdr/core';
+import { textFormat, type DocumentSession, type TextEdit } from '@mdr/core';
 import { formatCommands, type FormatCommand } from './commands.ts';
 import { chooseLineSeparator, OffsetMapper } from './offsets.ts';
 
@@ -34,6 +34,12 @@ export interface MarkdownEditorConfig {
   session: DocumentSession;
   options: EditorOptions;
   ariaLabel: string;
+  /**
+   * File name: Markdown names get the Markdown language and formatting shortcuts; anything else is
+   * plain text or code, highlighted by the language matching the name (no spellcheck). Default:
+   * Markdown.
+   */
+  fileName?: string;
   placeholder?: string;
   /** Called with the 1-based source line at the top of the viewport (for split-view sync). */
   onTopLineChange?: (line: number) => void;
@@ -44,6 +50,8 @@ export interface MarkdownEditor {
   setOptions(options: EditorOptions): void;
   scrollToLine(line: number): void;
   format(command: FormatCommand): void;
+  /** Switches the language after a rename. */
+  setFileName(fileName: string): void;
   focus(): void;
   destroy(): void;
 }
@@ -60,7 +68,16 @@ const highlight = HighlightStyle.define([
   { tag: tags.keyword, color: 'var(--color-syntax-keyword)' },
   { tag: [tags.string, tags.special(tags.string)], color: 'var(--color-syntax-string)' },
   { tag: [tags.number, tags.bool, tags.atom], color: 'var(--color-syntax-number)' },
+  // Code (plain text documents and fenced blocks).
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.macroName], color: 'var(--color-accent)' },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: 'var(--color-syntax-keyword)', fontStyle: 'italic' },
+  { tag: [tags.tagName, tags.attributeName], color: 'var(--color-syntax-keyword)' },
+  { tag: [tags.regexp, tags.escape, tags.special(tags.variableName)], color: 'var(--color-syntax-string)' },
+  { tag: [tags.definition(tags.variableName), tags.labelName], fontWeight: '600' },
+  { tag: tags.invalid, color: 'var(--color-danger)' },
 ]);
+
+const markdownExtension = markdown({ base: markdownLanguage, codeLanguages: languages });
 
 const theme = EditorView.theme({
   '&': { height: '100%', fontSize: 'var(--editor-font-size, 14px)', backgroundColor: 'transparent', color: 'var(--color-fg)' },
@@ -74,11 +91,40 @@ const theme = EditorView.theme({
   '.cm-searchMatch': { backgroundColor: 'var(--color-search-match)' },
 });
 
+/** Language support for a non-Markdown file name, loaded lazily; none for unknown names. */
+async function codeLanguage(fileName: string): Promise<Extension> {
+  const description = LanguageDescription.matchFilename(languages, fileName);
+  return description ? description.load() : [];
+}
+
 export function createMarkdownEditor(config: MarkdownEditorConfig): MarkdownEditor {
   const { session } = config;
   const separator = chooseLineSeparator(session.text);
   const mapper = new OffsetMapper(separator);
   const optionsCompartment = new Compartment();
+  const languageCompartment = new Compartment();
+  let fileName = config.fileName ?? 'document.md';
+  let destroyed = false;
+  const isMarkdown = () => textFormat(fileName) === 'markdown';
+  const languageExtensions = (): Extension => isMarkdown()
+    ? [
+        markdownExtension,
+        keymap.of([
+          { key: 'Mod-b', run: formatCommands.bold },
+          { key: 'Mod-i', run: formatCommands.italic },
+          { key: 'Mod-k', run: formatCommands.link },
+        ]),
+        EditorView.contentAttributes.of({ spellcheck: 'true' }),
+      ]
+    : EditorView.contentAttributes.of({ spellcheck: 'false' });
+  const loadCode = () => {
+    if (isMarkdown()) return;
+    const name = fileName;
+    void codeLanguage(name).then((language) => {
+      if (destroyed || name !== fileName) return;
+      view.dispatch({ effects: languageCompartment.reconfigure([languageExtensions(), language]) });
+    }, () => undefined);
+  };
 
   const optionExtensions = (options: EditorOptions): Extension => [
     options.lineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : [],
@@ -119,19 +165,16 @@ export function createMarkdownEditor(config: MarkdownEditorConfig): MarkdownEdit
         closeBrackets(),
         highlightSelectionMatches(),
         search({ top: true }),
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
+        languageCompartment.of(languageExtensions()),
         syntaxHighlighting(highlight),
         theme,
         config.placeholder ? placeholderExt(config.placeholder) : [],
-        EditorView.contentAttributes.of({ 'aria-label': config.ariaLabel, spellcheck: 'true', autocorrect: 'off' }),
+        EditorView.contentAttributes.of({ 'aria-label': config.ariaLabel, autocorrect: 'off' }),
         // History lives in the DocumentSession so undo spans task toggles and survives autosave.
         keymap.of([
           { key: 'Mod-z', run: () => session.undo(), preventDefault: true },
           { key: 'Mod-Shift-z', run: () => session.redo(), preventDefault: true },
           { key: 'Mod-y', run: () => session.redo(), preventDefault: true },
-          { key: 'Mod-b', run: formatCommands.bold },
-          { key: 'Mod-i', run: formatCommands.italic },
-          { key: 'Mod-k', run: formatCommands.link },
           ...closeBracketsKeymap,
           ...searchKeymap,
           ...defaultKeymap,
@@ -142,6 +185,8 @@ export function createMarkdownEditor(config: MarkdownEditorConfig): MarkdownEdit
       ],
     }),
   });
+
+  loadCode();
 
   // Mirror edits from other sources (checkbox toggles, undo/redo, external reloads).
   const unsubscribe = session.subscribe((event) => {
@@ -172,10 +217,17 @@ export function createMarkdownEditor(config: MarkdownEditorConfig): MarkdownEdit
       formatCommands[command](view);
       view.focus();
     },
+    setFileName(next) {
+      if (next === fileName) return;
+      fileName = next;
+      view.dispatch({ effects: languageCompartment.reconfigure(languageExtensions()) });
+      loadCode();
+    },
     focus() {
       view.focus();
     },
     destroy() {
+      destroyed = true;
       unsubscribe();
       view.destroy();
     },

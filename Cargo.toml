@@ -7,7 +7,7 @@ exclude = ["apps/desktop/src-tauri", "crates/local-store", "crates/tauri-plugin-
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 rust-version = "1.85"
 
 [workspace.dependencies]

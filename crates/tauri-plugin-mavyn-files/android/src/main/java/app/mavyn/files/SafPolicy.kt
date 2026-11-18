@@ -7,11 +7,30 @@ import java.util.Locale
 class SafFailure(val code: String) : Exception(code)
 
 object SafPolicy {
-    const val MAX_BYTES = 16 * 1024 * 1024
+    /** Text documents of any kind (Markdown, plain text, code, logs); matches the server default. */
+    const val MAX_BYTES = 256 * 1024 * 1024
+    /** Binary documents (docx, xlsx, ods, pdf); matches `MAX_FILE_BYTES` in TS. */
+    const val MAX_FILE_BYTES = 50 * 1024 * 1024
+    private val FILE_EXTENSIONS = listOf(".docx", ".xlsx", ".ods", ".pdf")
+
+    fun isBinaryName(name: String): Boolean = FILE_EXTENSIONS.any { name.lowercase(Locale.ROOT).endsWith(it) }
+
+    /** Documents Mavyn only shows (PDF): never linked for writing. */
+    fun isViewOnlyName(name: String): Boolean = name.lowercase(Locale.ROOT).endsWith(".pdf")
+
+    /** Size bound for a file by name: binary documents may be larger than text. */
+    fun maxBytes(name: String): Int = if (isBinaryName(name)) MAX_FILE_BYTES else MAX_BYTES
 
     fun exportMime(name: String): String = when (name.substringAfterLast('.').lowercase(Locale.ROOT)) {
         "md", "markdown", "mdown", "mkd", "mdx" -> "text/markdown"
-        "txt" -> "text/plain"
+        "txt", "log" -> "text/plain"
+        "csv" -> "text/csv"
+        "json" -> "application/json"
+        "xml" -> "text/xml"
+        "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "ods" -> "application/vnd.oasis.opendocument.spreadsheet"
+        "pdf" -> "application/pdf"
         "html", "htm" -> "text/html"
         "svg" -> "image/svg+xml"
         else -> "application/octet-stream"
@@ -24,13 +43,15 @@ object SafPolicy {
         if (hash(bytes) != expected) throw SafFailure("file.external_change")
     }
 
-    fun requireSize(size: Long) {
-        if (size > MAX_BYTES) throw SafFailure("file.unsupported")
+    fun requireSize(size: Long, limit: Int = MAX_BYTES) {
+        if (size > limit) throw SafFailure("file.too_large")
     }
 
+    /** Any file name is accepted: the app decides by content whether it is text or a known document. */
     fun requireName(name: String) {
-        if (!listOf(".md", ".markdown", ".mdown", ".mkd", ".mdx", ".txt")
-                .any { name.lowercase(Locale.ROOT).endsWith(it) }) throw SafFailure("file.unsupported")
+        if (name.isBlank() || name.length > 255 || name.contains('/') || name.contains('\\') || name.contains('\u0000')) {
+            throw SafFailure("file.unsupported")
+        }
     }
 
     fun requireAccess(locator: String, allowed: Boolean, read: Boolean, write: Boolean) {

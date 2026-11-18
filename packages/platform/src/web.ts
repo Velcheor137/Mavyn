@@ -1,4 +1,4 @@
-import { AppError, sha256Hex, toAppError, uuidv7, type FileFingerprint } from '@mdr/core';
+import { AppError, FILE_TYPES, sha256Hex, toAppError, uuidv7, type FileFingerprint } from '@mdr/core';
 import { MARKDOWN_EXTENSIONS, type PickedFile, type PlatformAdapter } from './types.ts';
 
 /** The subset of the File System Access API we rely on (Chromium-based browsers). */
@@ -38,7 +38,7 @@ function pickWithInput(multiple: boolean): Promise<File[]> {
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = multiple;
-    input.accept = [...MARKDOWN_EXTENSIONS, 'text/markdown', 'text/plain'].join(',');
+    // No `accept`: any text file (code, logs, configs) is welcome; content decides, not the name.
     input.addEventListener('change', () => resolve([...(input.files ?? [])]), { once: true });
     input.addEventListener('cancel', () => resolve([]), { once: true });
     input.click();
@@ -65,7 +65,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       try {
         handles = await this.showOpenFilePicker({
           multiple: options.multiple,
-          types: [{ description: 'Markdown', accept: { 'text/markdown': [...MARKDOWN_EXTENSIONS] } }],
+          types: [
+            { description: 'Markdown', accept: { 'text/markdown': [...MARKDOWN_EXTENSIONS] } },
+            // docx/xlsx/ods can be edited in place; PDF is view-only and always imported as a copy.
+            ...FILE_TYPES.map((t) => ({ description: t.format.toUpperCase(), accept: { [t.mime]: [t.extension] } })),
+          ],
         });
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return [];

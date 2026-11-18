@@ -66,3 +66,18 @@ impl From<sqlx::Error> for ApiError {
         ApiError::internal()
     }
 }
+
+/// Stable codes for binary ("file") documents. They live here rather than in `mdr_domain::codes`
+/// because only the server emits them; clients mirror them in their i18n catalogs.
+pub mod file_codes {
+    /// Text API (`GET /documents/{id}`, `PUT …/content`) on a file document.
+    pub const NOT_TEXT: &str = "document.not_text";
+    /// `GET /documents/{id}/file` on a text document.
+    pub const NOT_FILE: &str = "document.not_file";
+    /// Uploaded bytes do not match the declared sha-256.
+    pub const HASH_MISMATCH: &str = "file.hash_mismatch";
+    /// MIME type not allowed, or bytes without the matching signature.
+    pub const UNSUPPORTED: &str = "file.unsupported";
+    /// Upload larger than `MAX_FILE_BYTES`.
+    pub const TOO_LARGE: &str = "file.too_large";
+}

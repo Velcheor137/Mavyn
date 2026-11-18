@@ -21,7 +21,9 @@ pub struct Fingerprint {
 #[serde(rename_all = "camelCase")]
 pub struct PickedFile {
     name: String,
-    bytes_base64: String,
+    /// Desktop: the bytes wait in `desktop::Transfers` and are taken once with `take_transfer`
+    /// as a raw IPC response (no base64 in JSON, files may be hundreds of MiB).
+    bytes_token: String,
     locator: String,
     fingerprint: Fingerprint,
 }
@@ -62,6 +64,45 @@ async fn local_store(
         .map_err(|_| CommandError::new("storage.failed"))?
 }
 
+/// Raw-bytes channel for binary documents (docx, xlsx, ods, pdf): `putFile` carries the bytes as
+/// the raw IPC body and `getFile` returns them as an `ArrayBuffer` — no JSON or base64 copies.
+/// Operation, transaction token and hash travel in headers; scope checks are the store's.
+#[tauri::command]
+async fn local_store_file(
+    storage: State<'_, Arc<mavyn_local_store::StoreHost>>,
+    request: tauri::ipc::Request<'_>,
+) -> CmdResult<tauri::ipc::Response> {
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| CommandError::new("storage.failed"))
+    };
+    let (op, token, hash) = (
+        header("x-mavyn-op")?,
+        header("x-mavyn-token")?,
+        header("x-mavyn-hash")?,
+    );
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(_) => Vec::new(),
+    };
+    let storage = Arc::clone(storage.inner());
+    let bytes = tauri::async_runtime::spawn_blocking(move || match op.as_str() {
+        "putFile" => storage.put_file(&token, &hash, &body).map(|()| Vec::new()),
+        "getFile" => storage
+            .get_file(&token, &hash)
+            .map(Option::unwrap_or_default),
+        _ => Err("storage.failed".into()),
+    })
+    .await
+    .map_err(|_| CommandError::new("storage.failed"))?
+    .map_err(CommandError::new)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 fn platform_kind() -> &'static str {
     if cfg!(target_os = "android") {
@@ -96,10 +137,13 @@ pub fn run() {
                 desktop::read_linked,
                 desktop::write_linked,
                 desktop::save_as,
+                desktop::take_transfer,
                 local_store,
+                local_store_file,
                 sync::native_sync_supported,
                 sync::native_sync_url,
                 sync::native_sync_request,
+                sync::native_sync_file,
                 platform_kind
             ]);
     #[cfg(target_os = "android")]
@@ -113,9 +157,11 @@ pub fn run() {
             android::write_linked,
             android::save_as,
             local_store,
+            local_store_file,
             sync::native_sync_supported,
             sync::native_sync_url,
             sync::native_sync_request,
+            sync::native_sync_file,
             platform_kind
         ]);
     builder

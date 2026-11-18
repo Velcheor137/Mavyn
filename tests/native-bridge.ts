@@ -23,10 +23,17 @@ export function nativeTestBackend(beforeSend?: (request: Record<string, unknown>
   // Vitest workers exit after the suite; children must not survive the worker.
   const stop = () => { child.kill(); };
   process.once('exit', stop);
-  return new NativeBackend((request) => new Promise((resolve, reject) => {
-    beforeSend?.(request);
+  const send = (message: Record<string, unknown>) => new Promise<unknown>((resolve, reject) => {
     const id = ++sequence;
     pending.set(id, { resolve, reject });
-    child.stdin.write(JSON.stringify({ id, request }) + '\n', (error) => { if (error) { pending.delete(id); reject(error); } });
-  }), () => { process.removeListener('exit', stop); reader.close(); child.stdin.end(); });
+    child.stdin.write(JSON.stringify({ id, ...message }) + '\n', (error) => { if (error) { pending.delete(id); reject(error); } });
+  });
+  const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+  return new NativeBackend((request) => {
+    beforeSend?.(request);
+    return send({ request });
+  }, () => { process.removeListener('exit', stop); reader.close(); child.stdin.end(); }, async (request, bytes) => {
+    const value = await send({ file: { ...request, ...(bytes ? { bytesHex: toHex(bytes) } : {}) } });
+    return typeof value === 'string' ? new Uint8Array(Buffer.from(value, 'hex')) : null;
+  });
 }

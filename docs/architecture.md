@@ -43,7 +43,7 @@ Rules:
 
 | Concern | Web/PWA | Desktop (Win/Linux) | Android |
 |---|---|---|---|
-| Managed storage | IndexedDB (documents, revisions, sync bases) | SQLite in app data dir through Rust local-store | Same SQLite engine, verified in Android 16 x86_64 emulator; physical ARM64 pending |
+| Managed storage | IndexedDB (documents, contents, files, sync bases) | SQLite in app data dir through Rust local-store | Same SQLite engine, verified in Android 16 x86_64 emulator; physical ARM64 pending |
 | Linked files | File System Access API where available (Chromium); otherwise import-only + "save as" download | Real paths via Rust commands, atomic save | SAF `content://` URIs with persisted permissions; copy/save-as fallback |
 | Full-text search | In-memory inverted index built in a worker from IndexedDB, persisted per identity | SQLite FTS5 (`unicode61 remove_diacritics 2`) + prefix queries | same as desktop |
 | Secrets | HttpOnly cookie session; nothing in JS storage | Windows Credential Manager; Linux native sync pending | Android Keystore AES-GCM, encrypted files excluded from backup |
@@ -59,15 +59,36 @@ All IDs are UUIDv7 (time-ordered, generated client-side so offline creation is p
 ```
 Library   { id, name, kind: local|server, serverId?, createdAt }
 Folder    { id, libraryId, parentId?, name, sortKey, deletedAt? }
-Document  { id, libraryId, folderId?, title, source: Imported|Linked{locator},
-            headRevisionId, contentHash, tags[], favorite, updatedAt, deletedAt? }
-Revision  { id, documentId, parentRevisionId?, contentHash (sha-256 of UTF-8 bytes),
-            authorId?, createdAt, size, reason: edit|import|restore|merge|conflict }
-Blob      { hash, size, mime }            -- content-addressed, deduplicated (documents & attachments)
+Document  { id, libraryId, folderId?, title, fileName, kind?: text|file, mime?, encoding?, bom,
+            source: Imported|Linked{locator,fingerprint}, contentHash, originalHash?,
+            importBytesHash?, tags[], favorite, updatedAt, deletedAt?, remote? }
+Content   { hash, text }                  -- current text of text documents (sha-256 of UTF-8)
+FileRow   { hash, size, bytes }           -- bytes of binary documents and originals of import
 Tag       { name (NFC, casefolded key), displayName }
 OutboxOp  { opId (UUIDv7), kind, entityId, baseRevisionId?, payload, attempts, nextAttemptAt }
 SyncState { libraryId, cursor, status: Synced|Pending|Syncing|Offline|Conflict|Error, lastError? }
 ```
+
+Binary documents (ADR-007): `DocumentMeta.kind = 'file'` with `mime` marks a docx, xlsx, ods or
+pdf. Absent `kind` means text, so older records need no migration. Bytes are content-addressed in a
+separate `files` store; `readContent`/`saveContent` refuse them (`document.not_text`), `readFile` and
+`saveFile` (compare-and-swap on the hash) handle them. docx, xlsx and ods are edited in Mavyn, pdf is
+view-only. `originalHash` keeps the bytes the document was imported with. A rename keeps the type's
+extension. Import checks name, size (≤ 50 MiB), signature and, for zip-based formats, the central
+directory (`inspectZip`: entry count, unpacked size and ratio) before anything is parsed — the same
+checks run on bytes downloaded by sync.
+
+Text documents of any kind (ADR-009): `textFormat(fileName)` decides how a text document is shown —
+Markdown names (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mdx`) get the reader and editor, everything
+else (plain text, code, logs, `.txt`) only the source editor with syntax highlighting by file name;
+CSV/TSV also get a table view. Import accepts any file whose content is text (`detectText`: BOM,
+strict UTF-8, otherwise statistical detection with `chardet`; NUL bytes mean binary). The text is a
+JS string, stored and synced as UTF-8 and hashed as UTF-8; `encoding` (WHATWG label, absent = UTF-8)
+and `bom` say how bytes are written back (`encodeText`: UTF-8/16 directly, single-byte encodings
+through a reverse table built from `TextDecoder`, two-byte CJK encodings likewise; characters the
+encoding cannot represent fail with `file.unencodable`, never silently replaced). A non-UTF-8 import
+keeps its original bytes (`importBytesHash`) until the first edit so "Reopen with encoding" works.
+Text documents may be up to 256 MiB.
 
 Text invariants:
 
@@ -77,13 +98,15 @@ Text invariants:
 - Names/tags compare by `NFC` + locale-insensitive casefold (`toLocaleLowerCase('und')`); display
   keeps user input.
 
-Revision grouping (ADR-002): autosave writes the working copy immediately; a new `Revision` row is
-cut when (a) 5 minutes of edits have accumulated, (b) the editor is idle ≥ 60 s after changes,
-(c) the document is closed, (d) before sync upload, or (e) a checkbox toggle follows a period of
-no edits (toggles are coalesced over 10 s). Retention is configurable, defaulting to **keep all**.
-Explicit balanced cleanup retains all versions from the last 30 days and the latest per UTC
-day for a year. Initial/current revisions and all history of trashed documents stay protected.
-Changing the policy does not delete anything; cleanup requires confirmation in Settings.
+No version history (ADR-008, replaces ADR-002): a document keeps only its current content. A save
+replaces the content row and deletes the previous one unless another document (or an original of
+import) still uses it. Undo/redo lives in the open editor only. Synced text keeps one hidden base
+(`syncBases`) for three-way merges; it is not user-visible history. Upgrades delete existing
+revisions: IndexedDB v4 drops the `revisions` store, SQLite schema v3 deletes the revision records,
+the server's migration 0004 drops the `revisions` table — each also deletes contents only an old
+revision referenced. Without history some safety nets are explicit instead: "use server version"
+warns that local text is discarded, and a linked file changed both on disk and in Mavyn keeps the
+Mavyn text as a copy before the disk version wins.
 
 ## 5. Markdown pipeline (ADR-003)
 
@@ -126,14 +149,15 @@ and composes with concurrent edits) or to the working copy otherwise; both paths
 ## 6. Storage and saving
 
 Native managed storage (`crates/local-store`, independent Cargo workspace): bundled SQLite in
-`<app_data_dir>/library.sqlite3`, WAL, synchronous FULL, schema `user_version=1`. Fixed store/key
-JSON records preserve the existing domain model. A partial SQLite index accelerates revisions
-by document. FTS5 uses `unicode61 remove_diacritics 2`, prefix indexes, NFC/case/ё folding and
+`<app_data_dir>/library.sqlite3`, WAL, synchronous FULL, schema `user_version=3` (v2 added binary
+files, v3 removed version history). Fixed store/key JSON records preserve the existing domain model.
+FTS5 indexes the first 4 Mi characters of each text (the in-memory web index does the same; snippets
+are computed from that prefix, a whole 256 MiB log never crosses IPC) and uses `unicode61 remove_diacritics 2`, prefix indexes, NFC/case/ё folding and
 quoted AND-prefix queries; refresh happens in the same transaction as document/content writes.
 Native search returns only bounded matching candidates; it does not build the JS library index.
 
 `NativeBackend` receives an injected transport, with no Tauri dependency in shared packages.
-The only IPC entry is `local_store`: scoped begin/get/all/revisions/put/delete/commit/rollback,
+The only IPC entry is `local_store`: scoped begin/get/all/put/delete/commit/rollback,
 search and migration status/marker operations. Rust chooses the path; callers cannot execute
 arbitrary SQL. Transactions have opaque UUID tokens, readonly enforcement and a 60-second idle
 lease. The native StoreHost runs a weak-reference background reaper so an abandoned transaction
@@ -156,9 +180,22 @@ before writing/truncating/fsync. Unsupported providers get a localized export-co
 Export uses `ACTION_CREATE_DOCUMENT` with the appropriate MIME type. SAF writes cannot offer
 universal atomic replacement or exclusion of another writer after the final hash check.
 
-Web: managed docs in IndexedDB (`documents`, `contents` by hash, `revisions`, `outbox`, `settings`),
+Web: managed docs in IndexedDB (`documents`, `contents` by hash, `files`, `syncBases`, `settings`),
 one database per identity (`mdreader:<serverId>:<userId>` or `mdreader:local`). Linked files via
 File System Access handles stored in IndexedDB; permission is re-requested on use.
+
+Binary documents on native storage live in table `files(hash, size, bytes BLOB)` (schema v2,
+additive migration from v1) outside the JSON records; `put_file` verifies the SHA-256. Bytes cross
+IPC as raw payloads (`local_store_file`, `tauri::ipc::Request`/`Response`), never as JSON/base64;
+operation, transaction token and hash travel in headers and use the same scoped transactions. FTS5
+indexes such documents by title and file name only. On the web they are an IndexedDB object store
+(database version 4). On desktop, picked files, linked reads/writes and "save as" also move raw
+bytes (`take_transfer` tokens, raw request bodies with base64-JSON arguments in `x-mavyn-args`); the
+Android plugin bridge is JSON-only, so Android still sends file bytes as base64.
+
+Linked files: text, code and docx/xlsx/ods can be linked to a file on disk (pdf is always a copy).
+Saves write the file first (hash-checked compare-and-swap), then the library; on open a file changed
+on disk wins, an edit made only in Mavyn (e.g. synced) is written to the file.
 
 ## 7. Server (ADR-005)
 
@@ -178,9 +215,56 @@ extension; the check function already takes the resource path). Every handler re
 resource's library first and calls `authz::require(role)`; object IDs from the client are never
 trusted without that lookup (IDOR protection). 404 is returned for resources the user cannot see.
 
-Limits: body size 16 MiB for documents, 50 MiB for attachments (configurable); per-IP and per-user
-rate limits on auth endpoints; uploads stored content-addressed under `DATA_DIR/blobs/ab/cd/<sha256>`
-— client filenames never touch the filesystem.
+Limits: text documents up to 256 MiB (`MAX_DOCUMENT_BYTES`; body limit on the create and content
+routes only, 1 MiB elsewhere), binary documents 50 MiB (`MAX_FILE_BYTES`, on the file routes only);
+per-IP and per-user rate limits on auth endpoints. Server search indexes the first 256 KiB of a text
+(PostgreSQL caps a tsvector at 1 MiB). Client filenames never touch the filesystem.
+
+### Binary documents (ADR-007, revised for stage 2)
+
+docx, xlsx, ods and pdf are stored in a library as **file documents** (`documents.kind = 'file'`,
+`documents.mime`) and synced through the server. docx, xlsx and ods are **edited in Mavyn** with
+built-in editors; pdf stays view-only.
+
+- **Whole-file updates, no merge.** `PUT /documents/{id}/file?base_revision_id=&sha256=` replaces the
+  bytes (compare-and-swap on the head, `409 sync.conflict` otherwise). Bytes are never merged: a file
+  edited on two devices is a conflict the user resolves (open the other version read-only, keep mine,
+  take theirs, keep both).
+- **No history, but an original.** `original_hash` keeps the bytes of the upload; `GET
+  /documents/{id}/original` returns them and "Restore original" opens them as a copy. Replaced bytes
+  are deleted once nothing references them.
+- **Search by title only.** The `search` vector of a file is built from its title; bytes are never
+  indexed.
+- **Validated on every write.** Declared sha-256 must match (`file.hash_mismatch`), the MIME type must
+  be on the allow-list and the bytes must start with its signature (`file.unsupported`), size ≤
+  `MAX_FILE_BYTES` (`file.too_large`). The server never parses the files.
+- **Served inert.** Downloads are always `application/octet-stream` with `nosniff`.
+- **Stored in PostgreSQL**, `file_blobs(hash, size, mime, bytes bytea)`, content-addressed like
+  `blobs`: one backup target, blob and document row in one transaction.
+- **Integrity without a foreign key.** `documents.content_hash` points into `blobs` (text) or
+  `file_blobs` (files) by kind; a foreign key cannot target two tables, so triggers reject a hash
+  with no blob of the document's kind (and an `original_hash` with no file blob). Blob garbage
+  collection (`drop_blob_if_unreferenced`) locks the blob row first and checks references in a new
+  statement; writers lock it with `INSERT … ON CONFLICT DO UPDATE`, so a concurrent reference is
+  either seen or re-inserts the row.
+- **Protocol 2.** Clients of protocol 1 (v0.1.x) treated files as immutable and are refused
+  (`sync.protocol_unsupported`); the stage-1 `files=1` opt-in is gone.
+
+**Editors.** Spreadsheets (`packages/ui/src/sheets`): one model for xlsx (ExcelJS, the loaded
+workbook is patched on save so page setup, defined names and theme survive), ods (own reader/writer;
+untouched cells are written back as their original XML, other package parts byte for byte) and
+CSV/TSV (text documents with a table view; cells are exact text). Formulas are recalculated with
+HyperFormula (GPLv3 — Mavyn is GPLv3 because of it); inserting/deleting rows and columns goes through
+it so references move. Word (`packages/ui/src/docx`): ProseMirror over `word/document.xml` only;
+every block parsed from the file keeps its original XML and is written back byte for byte while
+untouched, edited paragraphs are regenerated from the model plus their original properties, unknown
+inline content (fields, bookmarks, equations, shapes) are atoms that keep their XML. Styles,
+numbering, headers and footers stay as they are; lists, images and tables add what they need (media,
+relationships, content types, list definitions). Content an editor cannot keep — charts, pivot
+tables, macros, embedded objects, comments, tracked changes, functions HyperFormula lacks — makes the
+first edit go to a copy (`forkWithEdits`), the original stays untouched. Autosave writes whole files
+after 3 s without changes (at most every 30 s while editing); sync uploads an edited file after it
+has been quiet for 30 s.
 
 ## 8. Sync protocol (ADR-006)
 
@@ -210,9 +294,10 @@ document restores it.
 `base_revision_id`), deletes. `409 sync.conflict` → fetch head, integrate as in pull, retry.
 `404` on update → access lost or deleted: keep the text locally, detached.
 
-**Conflict resolution** (UI banner): keep mine (upload on top of their head), use server (local
-text stays in local history), keep both (server version stays, local text moves to a new local
-document).
+**Conflict resolution** (UI banner): keep mine (upload on top of their head), use server (the local
+text is discarded — there is no history, the banner says so and shows the diff first), keep both
+(server version stays, local text moves to a new local document). Merges of very large texts
+(base + ours + theirs above 24 Mi characters) are not attempted; they go to the banner.
 
 **Scheduling.** Sync runs on start, 1.5 s after local changes, every 60 s, on `online` and when the
 tab becomes visible. Network/5xx failures back off exponentially with full jitter (1 s … 5 min);
@@ -237,6 +322,18 @@ saved mappings must match both server URL and user. Logout drains sync/conflict 
 before detaching copies and clearing credentials. Native startup retries an unavailable configured
 server. Linux native sync remains unavailable until a secure credential backend is implemented.
 
+**Binary documents.** Created with `POST /libraries/{id}/files`, edited with `PUT
+/documents/{id}/file` (base revision, `sha256`, deterministic idempotency key), downloaded with `GET
+…/file` and verified (hash, type) before storing; a new device also downloads the original of import.
+A file changed on the server while unchanged here is replaced; changed on both sides it becomes a
+conflict (never merged). Edited files are uploaded only after 30 s without local saves. Windows and
+Android route these requests through the restricted native client as raw bytes (`native_sync_file`,
+POST/PUT bodies, reply framed as u16 status + body; 600 s timeout). Large JSON bodies (text up to 256
+MiB) get the same timeout.
+
+**Text encodings.** `encoding` travels with text documents (create, change feed, `PATCH` with
+`base_encoding`/`encoding` compare-and-swap like the name).
+
 ## 9. Security boundaries
 
 - All Markdown is untrusted (§5). Rendered HTML is inserted only after sanitization.
@@ -246,6 +343,12 @@ server. Linux native sync remains unavailable until a secure credential backend 
   loaded by the client (the server never fetches user-provided URLs → no SSRF surface).
 - CSP (web): `default-src 'self'; img-src 'self' https: data: blob:; style-src 'self' 'unsafe-inline'`
   (`unsafe-inline` for KaTeX/Shiki inline styles); `script-src 'self'`; `frame-ancestors 'none'`.
+- Binary documents are parsed only in the client and only by their viewers, after `detectFileType`.
+  docx renders with docx-preview into a detached tree that is cleaned (no scripts, iframes, forms,
+  event handlers, non-`data:`/`blob:` images; links only http/https/mailto, opened externally;
+  altChunk HTML never rendered) and then placed in a shadow root. Spreadsheets are read by SheetJS
+  without formulas, HTML or VBA and rendered by React from cell text, never `sheet_to_html`.
+  PDF uses pdf.js ≥ 4.2.67 (CVE-2024-4367) without XFA or the scripting sandbox.
 - QR connection codes contain only `{ "v":1, "url": "https://…", "name": "…" }`.
 
 ## 10. Localization

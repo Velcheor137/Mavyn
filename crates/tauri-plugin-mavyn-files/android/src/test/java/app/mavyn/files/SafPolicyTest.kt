@@ -32,15 +32,35 @@ class SafPolicyTest {
     }
 
     @Test fun boundsContentAndValidatesNames() {
-        rejected("file.unsupported") { SafPolicy.requireSize(SafPolicy.MAX_BYTES + 1L) }
-        rejected("file.unsupported") { SafPolicy.requireName("picture.png") }
+        rejected("file.too_large") { SafPolicy.requireSize(SafPolicy.MAX_BYTES + 1L) }
+        // Any text file name is fine (code, logs, no extension); the app checks the content.
         SafPolicy.requireName("Заметка.MD")
-        SafPolicy.requireName("notes.txt")
+        SafPolicy.requireName("main.py")
+        SafPolicy.requireName("Dockerfile")
+        SafPolicy.requireName("Отчёт.PDF")
+        rejected("file.unsupported") { SafPolicy.requireName(" ") }
+        rejected("file.unsupported") { SafPolicy.requireName("a/b.txt") }
+        rejected("file.unsupported") { SafPolicy.requireName("x".repeat(256)) }
+    }
+
+    @Test fun binaryDocumentsHaveTheirOwnSizeLimit() {
+        assertEquals(SafPolicy.MAX_FILE_BYTES, SafPolicy.maxBytes("scan.pdf"))
+        assertEquals(SafPolicy.MAX_BYTES, SafPolicy.maxBytes("note.md"))
+        SafPolicy.requireSize(SafPolicy.MAX_FILE_BYTES.toLong(), SafPolicy.maxBytes("scan.pdf"))
+        rejected("file.too_large") { SafPolicy.requireSize(SafPolicy.MAX_FILE_BYTES + 1L, SafPolicy.maxBytes("scan.pdf")) }
+        assertTrue(SafPolicy.isBinaryName("a.ODS"))
+        assertTrue(SafPolicy.isViewOnlyName("Скан.PDF"))
+        assertFalse(SafPolicy.isViewOnlyName("table.xlsx"))
+        assertFalse(SafPolicy.isBinaryName("a.md"))
     }
 
     @Test fun exportsWithTheCorrectMimeTypeAndExtension() {
         assertEquals("text/markdown", SafPolicy.exportMime("Заметка.MD"))
         assertEquals("text/html", SafPolicy.exportMime("document.html"))
+        assertEquals("text/plain", SafPolicy.exportMime("server.log"))
+        assertEquals("application/json", SafPolicy.exportMime("data.json"))
+        assertEquals("application/pdf", SafPolicy.exportMime("Скан.pdf"))
+        assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document", SafPolicy.exportMime("a.docx"))
         assertEquals("image/svg+xml", SafPolicy.exportMime("diagram.svg"))
         assertEquals("application/octet-stream", SafPolicy.exportMime("attachment.bin"))
     }

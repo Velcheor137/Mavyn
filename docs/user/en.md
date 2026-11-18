@@ -18,16 +18,20 @@ any SQLite `-wal`/`-shm` files; do not copy only the database file while the app
 
 ## Basics
 
-- **New document** (Alt+N) creates a note and opens it in split view.
+- **New document** (Alt+N) creates a Markdown note and opens it in split view.
+- **New file…** (Alt+Shift+N) creates an empty text or code file with any name and extension
+  (`notes.txt`, `script.py`, `Dockerfile`).
 - **Open file** (Ctrl+O) asks how to add files:
-  - *Add to Mavyn* — the app keeps its own copy with version history.
+  - *Add to Mavyn* — the app keeps its own copy.
   - *Edit the file in place* — saves go back to the file on disk (Chrome/Edge only; the browser asks
     for permission). If another program changed the file, the app does **not** overwrite it and
-    offers to load the newer version or save yours as a copy.
-- Drag `.md` files onto the window to add them to the library.
+    offers to load the newer version or save yours as a copy. Text, code, Word, Excel and
+    OpenDocument files can be edited in place; PDF is always added as a copy.
+- Drag files onto the window to add them to the library: Markdown, any text or code file, Word,
+  Excel, OpenDocument and PDF.
 - New, opened and dropped files go into the folder (and tag) you are viewing; the heading above
   the document list says where you are. The open folder is remembered for the next start.
-- **Download (.md)** and **Move to trash** sit in the document toolbar next to history.
+- **Download** and **Move to trash** sit in the document toolbar.
   After deleting, the notification offers **Undo**.
 - Large documents (thousands of lines) render in the background without freezing the window.
 
@@ -39,9 +43,9 @@ show nested folders. Names must be unique within the same parent (case-insensiti
 Move dialogs exclude the folder itself and its descendants.
 
 In the document's **More actions** menu, **Rename** edits the library file name and
-**Move to folder** chooses a destination, including **Library root**. Text and version
-history stay intact. A document with a heading is listed by its heading, otherwise by its
-file name. Linked files keep their names and locations on disk.
+**Move to folder** chooses a destination, including **Library root**. The text stays intact. A
+Markdown document with a heading is listed by its heading, otherwise by its file name; other text
+files are listed by their file name. Linked files keep their names and locations on disk.
 
 **Delete folder** in the folder's **…** menu moves the folder, its subfolders and their
 documents to Trash after confirmation. The synced folder itself cannot be deleted from the menu.
@@ -55,16 +59,46 @@ New documents are named "Untitled", "Untitled 2" and so on, so names in one fold
 - Edits save automatically (the indicator shows *Saved*, *Saving…*, *Unsaved changes*).
   Ctrl+S saves immediately. Undo/Redo (Ctrl+Z / Ctrl+Shift+Z) works across saves and checkbox clicks.
 - Double-click a block in the reader (split view) to jump to its source line.
-- **Version history** (clock icon) shows earlier versions with changes; *Restore* creates a new
-  version, nothing is lost.
+- Mavyn keeps only the current text of each document: there is no version history. Undo works while
+  the document is open.
 
-## Keeping history
+## Text and code files
 
-Settings → **Version history** → **History retention** defaults to **Keep all revisions**.
-The balanced policy keeps every revision from the last 30 days and then the latest per UTC day
-for a year. Initial/current versions and the history of documents in Trash stay protected.
-Selecting a policy does not delete anything. **Clean up history** asks for confirmation before
-permanently removing old revisions; current document text remains unchanged.
+Any text file can be added: plain text, logs, configuration, source code in any language, files
+without an extension. They open in the source editor with syntax highlighting chosen by the file
+name; there is no reading view. Search covers their content (the first 4 million characters of very
+large files). Files up to 256 MB can be edited.
+
+- The encoding is detected on import (UTF-8, UTF-16, Windows-1251, KOI8-R, Shift_JIS and others) and
+  the file is written back in the same encoding. **More actions → Encoding** shows it: *Reopen with
+  encoding* re-reads the original file if the text looks garbled (linked files, or copies not edited
+  yet), *Save with encoding* converts it. A character the encoding cannot store stops the save with a
+  message instead of being lost.
+- **CSV/TSV** files open as an editable **Table** (switch to **Text** for the raw file). Edits are
+  written back as CSV with the same delimiter and line endings; CSV has no formatting or formulas.
+
+## Word, Excel, OpenDocument and PDF documents
+
+Besides text, the library accepts **docx**, **xlsx**, **ods** and **pdf** files — via **Open file**,
+drag and drop, or "Open with".
+
+- **Spreadsheets** (xlsx, ods) open in an editor: cell values and formulas (recalculated as you type),
+  rows, columns and sheets, fonts, colours, borders, alignment, number formats, merged cells, column
+  widths and row heights. Ctrl+C/Ctrl+V copy and paste cells as text.
+- **Word documents** open in the exact page view; **Edit** switches to the editor: text, bold/italic
+  and other character formatting, the document's paragraph styles, alignment, lists, tables and
+  pictures. The editor follows the document's styles and page width but does not show page breaks.
+- **PDF** is view-only.
+- Edits save automatically a few seconds after you stop typing.
+- If a file contains something Mavyn cannot save (charts, pivot tables, macros, embedded objects,
+  comments, tracked changes, functions the formula engine does not know), your first edit creates a
+  copy next to it — "Name (edited)" — and the original stays untouched. A notice says why.
+- **More actions → Restore original** opens the file as it was imported, as a copy.
+- Search finds these documents by name only. **Download original** saves the current file.
+- The limit is 50 MB per file. Legacy `.doc` and `.xls` are not supported.
+- With a server connected the files sync between devices. If the same file was changed on two
+  devices, the document shows a conflict: *Open the other version* (read only), *Keep my version*,
+  *Use server version* or *Keep both*. Files are never merged.
 
 ## Supported Markdown
 
@@ -126,7 +160,8 @@ to sync now. You can keep working offline — changes upload when the connection
 
 If the same document was changed on the server and here in overlapping places, the document shows
 a **conflict** banner. Nothing is overwritten. Choose *Keep my version*, *Use server version*
-(your text stays in the document history) or *Keep both* (your text moves to a separate document).
+(your text is discarded — there is no version history) or *Keep both* (your text moves to a separate
+document).
 *Show server version* displays the differences first.
 
 New documents are created in the folder you are viewing, so a document made inside the synced

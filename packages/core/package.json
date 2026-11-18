@@ -7,6 +7,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "chardet": "^2.2.0",
+    "fflate": "^0.8.3",
     "node-diff3": "^3.2.1"
   }
 }

@@ -3,6 +3,7 @@ pub mod files;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,6 +14,22 @@ type Result<T> = std::result::Result<T, String>;
 fn sql<T>(result: rusqlite::Result<T>) -> Result<T> {
     result.map_err(|_| "storage.failed".into())
 }
+/// Upper bound for one binary document (docx, xlsx, ods, pdf), as in `MAX_FILE_BYTES` (TS).
+pub const MAX_FILE_BYTES: usize = 50 * 1024 * 1024;
+const SCHEMA_VERSION: i64 = 3;
+/// Characters of a text document that go into the search index (same as the in-memory index).
+const MAX_INDEXED_CHARS: usize = 4 * 1024 * 1024;
+
+fn prefix_chars(text: &str, max: usize) -> &str {
+    match text.char_indices().nth(max) {
+        Some((end, _)) => &text[..end],
+        None => text,
+    }
+}
+/// Bytes of immutable binary documents live outside the JSON records, by SHA-256.
+const FILES_TABLE: &str =
+    "CREATE TABLE files(hash TEXT PRIMARY KEY, size INTEGER NOT NULL, bytes BLOB NOT NULL) WITHOUT ROWID;";
+
 fn fold(text: &str) -> String {
     text.nfc()
         .flat_map(char::to_lowercase)
@@ -73,27 +90,29 @@ mod lease_tests {
 enum Store {
     Documents,
     Contents,
-    Revisions,
     Folders,
     Handles,
     Settings,
     SyncBases,
+    /// Binary document bytes: only `all` (hash/size listing) and `delete` go through JSON;
+    /// bytes use [`LocalStore::put_file`] / [`LocalStore::get_file`].
+    Files,
 }
 impl Store {
     fn name(self) -> &'static str {
         match self {
             Self::Documents => "documents",
             Self::Contents => "contents",
-            Self::Revisions => "revisions",
             Self::Folders => "folders",
             Self::Handles => "handles",
             Self::Settings => "settings",
             Self::SyncBases => "syncBases",
+            Self::Files => "files",
         }
     }
     fn key(self) -> &'static str {
         match self {
-            Self::Contents => "hash",
+            Self::Contents | Self::Files => "hash",
             Self::Handles | Self::SyncBases => "documentId",
             Self::Settings => "key",
             _ => "id",
@@ -126,10 +145,6 @@ enum Request {
     All {
         token: String,
         store: Store,
-    },
-    Revisions {
-        token: String,
-        document_id: String,
     },
     Put {
         token: String,
@@ -212,7 +227,7 @@ impl StoreHost {
         })
     }
 
-    pub fn handle(&self, request: Value) -> Result<Value> {
+    fn with_store<R>(&self, f: impl FnOnce(&mut LocalStore) -> Result<R>) -> Result<R> {
         let mut guard = self.database.lock().map_err(|_| "storage.failed")?;
         if guard.is_none() {
             *guard = Some(LocalStore::open_with_idle_timeout(
@@ -220,7 +235,19 @@ impl StoreHost {
                 self.idle_timeout,
             )?);
         }
-        guard.as_mut().ok_or("storage.failed")?.handle(request)
+        f(guard.as_mut().ok_or("storage.failed")?)
+    }
+
+    pub fn handle(&self, request: Value) -> Result<Value> {
+        self.with_store(|store| store.handle(request))
+    }
+
+    pub fn put_file(&self, token: &str, hash: &str, bytes: &[u8]) -> Result<()> {
+        self.with_store(|store| store.put_file(token, hash, bytes))
+    }
+
+    pub fn get_file(&self, token: &str, hash: &str) -> Result<Option<Vec<u8>>> {
+        self.with_store(|store| store.get_file(token, hash))
     }
 }
 
@@ -244,7 +271,7 @@ impl LocalStore {
         let connection = sql(Connection::open(path))?;
         let version: i64 =
             sql(connection.pragma_query_value(None, "user_version", |row| row.get(0)))?;
-        if version > 1 {
+        if version > SCHEMA_VERSION {
             return Err("storage.schema_unsupported".into());
         }
         sql(connection.busy_timeout(Duration::from_secs(5)))?;
@@ -262,6 +289,26 @@ impl LocalStore {
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE VIRTUAL TABLE search_index USING fts5(document_id UNINDEXED,title,body,tokenize='unicode61 remove_diacritics 2',prefix='2 3 4');
                 PRAGMA user_version=1; COMMIT;"))?;
+        }
+        if version < 2 {
+            // v2: binary documents. Additive only; existing records are untouched.
+            sql(connection.execute_batch(&format!(
+                "BEGIN IMMEDIATE; {FILES_TABLE} PRAGMA user_version=2; COMMIT;"
+            )))?;
+        }
+        if version < 3 {
+            // v3: no version history (ADR-008). Old revisions go, and with them every text or file
+            // that no document references any more.
+            sql(connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                DELETE FROM records WHERE store='revisions';
+                DROP INDEX IF EXISTS revisions_by_document;
+                DELETE FROM records WHERE store='contents' AND key NOT IN
+                    (SELECT json_extract(value,'$.contentHash') FROM records WHERE store='documents');
+                DELETE FROM files WHERE hash NOT IN
+                    (SELECT json_extract(value,'$.contentHash') FROM records WHERE store='documents');
+                PRAGMA user_version=3; COMMIT;",
+            ))?;
         }
         Ok(Self {
             connection,
@@ -294,20 +341,26 @@ impl LocalStore {
             }
             Request::Get { token, store, key } => {
                 self.check(&token, Some(store), false)?;
+                if store == Store::Files {
+                    return Err("storage.failed".into());
+                }
                 Ok(self.get(store, &key)?.unwrap_or(Value::Null))
             }
             Request::All { token, store } => {
                 self.check(&token, Some(store), false)?;
+                if store == Store::Files {
+                    let mut statement = sql(self
+                        .connection
+                        .prepare("SELECT hash,size FROM files ORDER BY hash"))?;
+                    let rows = sql(statement.query_map([], |row| {
+                        Ok(json!({"hash": row.get::<_, String>(0)?, "size": row.get::<_, i64>(1)?}))
+                    }))?;
+                    return Ok(Value::Array(sql(rows.collect())?));
+                }
                 let mut statement = sql(self
                     .connection
                     .prepare("SELECT value FROM records WHERE store=?1 ORDER BY key"))?;
                 let rows = sql(statement.query_map([store.name()], |row| row.get::<_, String>(0)))?;
-                self.values(rows)
-            }
-            Request::Revisions { token, document_id } => {
-                self.check(&token, Some(Store::Revisions), false)?;
-                let mut statement=sql(self.connection.prepare("SELECT value FROM records WHERE store='revisions' AND json_extract(value,'$.documentId')=?1"))?;
-                let rows = sql(statement.query_map([document_id], |row| row.get::<_, String>(0)))?;
                 self.values(rows)
             }
             Request::Put {
@@ -316,6 +369,9 @@ impl LocalStore {
                 value,
             } => {
                 self.check(&token, Some(store), true)?;
+                if store == Store::Files {
+                    return Err("storage.failed".into());
+                }
                 let key = value
                     .get(store.key())
                     .and_then(Value::as_str)
@@ -326,6 +382,12 @@ impl LocalStore {
             }
             Request::Delete { token, store, key } => {
                 self.check(&token, Some(store), true)?;
+                if store == Store::Files {
+                    sql(self
+                        .connection
+                        .execute("DELETE FROM files WHERE hash=?1", [&key]))?;
+                    return Ok(Value::Null);
+                }
                 sql(self.connection.execute(
                     "DELETE FROM records WHERE store=?1 AND key=?2",
                     params![store.name(), key],
@@ -354,7 +416,7 @@ impl LocalStore {
                     |r| r.get(0),
                 ))?;
                 let empty: bool = sql(self.connection.query_row(
-                    "SELECT NOT EXISTS(SELECT 1 FROM records)",
+                    "SELECT NOT EXISTS(SELECT 1 FROM records) AND NOT EXISTS(SELECT 1 FROM files)",
                     [],
                     |r| r.get(0),
                 ))?;
@@ -374,6 +436,35 @@ impl LocalStore {
             }
         }
     }
+    /// Stores immutable document bytes under their SHA-256 inside the active write transaction.
+    /// The hash is verified, so content addressing cannot be forged by the caller.
+    pub fn put_file(&mut self, token: &str, hash: &str, bytes: &[u8]) -> Result<()> {
+        self.expire_idle()?;
+        self.check(token, Some(Store::Files), true)?;
+        if bytes.is_empty() || bytes.len() > MAX_FILE_BYTES {
+            return Err("file.too_large".into());
+        }
+        if hex::encode(Sha256::digest(bytes)) != hash {
+            return Err("storage.failed".into());
+        }
+        sql(self.connection.execute(
+            "INSERT INTO files(hash,size,bytes) VALUES(?1,?2,?3) ON CONFLICT(hash) DO NOTHING",
+            params![hash, bytes.len() as i64, bytes],
+        ))?;
+        Ok(())
+    }
+
+    pub fn get_file(&mut self, token: &str, hash: &str) -> Result<Option<Vec<u8>>> {
+        self.expire_idle()?;
+        self.check(token, Some(Store::Files), false)?;
+        sql(self
+            .connection
+            .query_row("SELECT bytes FROM files WHERE hash=?1", [hash], |r| {
+                r.get(0)
+            })
+            .optional())
+    }
+
     fn expire_idle(&mut self) -> Result<()> {
         if self
             .active
@@ -445,14 +536,22 @@ impl LocalStore {
                 if !doc.get("deletedAt").is_none_or(Value::is_null) {
                     continue;
                 }
-                if let Some(hash) = doc.get("contentHash").and_then(Value::as_str) {
+                let title = format!(
+                    "{} {}",
+                    doc.get("title").and_then(Value::as_str).unwrap_or(""),
+                    doc.get("fileName").and_then(Value::as_str).unwrap_or("")
+                );
+                if doc.get("kind").and_then(Value::as_str) == Some("file") {
+                    // Binary documents are searchable by name only.
+                    sql(self.connection.execute(
+                        "INSERT INTO search_index(document_id,title,body) VALUES(?1,?2,'')",
+                        params![id, fold(&title)],
+                    ))?;
+                } else if let Some(hash) = doc.get("contentHash").and_then(Value::as_str) {
                     if let Some(content) = self.get(Store::Contents, hash)? {
-                        let title = format!(
-                            "{} {}",
-                            doc.get("title").and_then(Value::as_str).unwrap_or(""),
-                            doc.get("fileName").and_then(Value::as_str).unwrap_or("")
-                        );
                         let text = content.get("text").and_then(Value::as_str).unwrap_or("");
+                        // Large logs and code are searchable by their beginning only.
+                        let text = prefix_chars(text, MAX_INDEXED_CHARS);
                         sql(self.connection.execute(
                             "INSERT INTO search_index(document_id,title,body) VALUES(?1,?2,?3)",
                             params![id, fold(&title), fold(text)],
@@ -479,14 +578,14 @@ impl LocalStore {
         if query.is_empty() {
             return Ok(json!([]));
         }
-        let mut statement=sql(self.connection.prepare("SELECT document_id,bm25(search_index,0,8,1),d.value,c.value FROM search_index JOIN records d ON d.store='documents' AND d.key=document_id JOIN records c ON c.store='contents' AND c.key=json_extract(d.value,'$.contentHash') WHERE search_index MATCH ?1 ORDER BY bm25(search_index,0,8,1),document_id LIMIT ?2"))?;
+        let mut statement=sql(self.connection.prepare("SELECT document_id,bm25(search_index,0,8,1),d.value,substr(json_extract(c.value,'$.text'),1,4194304) FROM search_index JOIN records d ON d.store='documents' AND d.key=document_id LEFT JOIN records c ON c.store='contents' AND c.key=json_extract(d.value,'$.contentHash') WHERE search_index MATCH ?1 ORDER BY bm25(search_index,0,8,1),document_id LIMIT ?2"))?;
         let rows = sql(
             statement.query_map(params![query, limit.min(100) as i64], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, f64>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             }),
         )?;
@@ -494,10 +593,9 @@ impl LocalStore {
         for row in rows {
             let (id, score, doc, content) = sql(row)?;
             let doc: Value = serde_json::from_str(&doc).map_err(|_| "storage.failed")?;
-            let content: Value = serde_json::from_str(&content).map_err(|_| "storage.failed")?;
-            result.push(
-                json!({"documentId":id,"score":-score,"title":doc["title"],"text":content["text"]}),
-            );
+            // Only the indexed prefix goes back for snippets, never a whole 256 MiB log.
+            let text = content.unwrap_or_default();
+            result.push(json!({"documentId":id,"score":-score,"title":doc["title"],"text":text}));
         }
         Ok(Value::Array(result))
     }

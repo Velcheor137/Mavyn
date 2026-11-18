@@ -9,6 +9,8 @@ pub struct Config {
     /// Built web app to serve at `/` (optional).
     pub web_dist: Option<String>,
     pub max_document_bytes: usize,
+    /// Upper bound for one binary ("file") document upload.
+    pub max_file_bytes: usize,
     pub session_ttl_days: i64,
     /// Secure cookies; disable only for plain-HTTP development.
     pub cookie_secure: bool,
@@ -33,7 +35,10 @@ impl Config {
             web_dist: var("WEB_DIST"),
             max_document_bytes: var("MAX_DOCUMENT_BYTES")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(16 * 1024 * 1024),
+                .unwrap_or(256 * 1024 * 1024),
+            max_file_bytes: var("MAX_FILE_BYTES")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50 * 1024 * 1024),
             session_ttl_days: var("SESSION_TTL_DAYS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
@@ -50,6 +55,7 @@ impl Config {
             public_origin: Some("https://notes.example".into()),
             web_dist: None,
             max_document_bytes: 64 * 1024,
+            max_file_bytes: 256 * 1024,
             session_ttl_days: 30,
             cookie_secure: true,
             trust_proxy: false,

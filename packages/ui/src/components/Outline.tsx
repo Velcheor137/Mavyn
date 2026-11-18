@@ -1,3 +1,4 @@
+import { textFormat } from '@mdr/core';
 import { useTranslation } from '@mdr/i18n';
 import { X } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -9,7 +10,9 @@ export function Outline({ id }: { id: string }) {
   const { t, i18n } = useTranslation();
   const session = useSession(id);
   const meta = useWorkspace((s) => s.documents.find((d) => d.id === id));
-  const { result } = useRendered(session?.text, 400);
+  // Plain text and code have no Markdown structure: no table of contents or tasks.
+  const markdown = meta ? textFormat(meta.fileName) === 'markdown' : false;
+  const { result } = useRendered(markdown ? session?.text : undefined, 400);
   const [tagInput, setTagInput] = useState('');
 
   const stats = useMemo(() => {
@@ -36,7 +39,7 @@ export function Outline({ id }: { id: string }) {
 
   return (
     <aside className="outline" aria-label={t('document.toc')}>
-      <section>
+      {markdown && <section>
         <h2 className="panel-heading">{t('document.toc')}</h2>
         {result && result.toc.length === 0 && <p className="muted small">{t('document.noHeadings')}</p>}
         <ul className="toc">
@@ -48,7 +51,7 @@ export function Outline({ id }: { id: string }) {
             </li>
           ))}
         </ul>
-      </section>
+      </section>}
 
       <section>
         <h2 className="panel-heading">{t('document.details')}</h2>

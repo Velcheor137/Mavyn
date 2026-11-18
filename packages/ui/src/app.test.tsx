@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render as renderDom, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import { addFiles, refreshLibrary } from './workspace.ts';
 import { createI18n, I18nextProvider } from '@mdr/i18n';
-import { AppError } from '@mdr/core';
+import { AppError, encodeText, sha256Hex } from '@mdr/core';
 import { render } from '@mdr/markdown-engine';
 import type { PlatformAdapter } from '@mdr/platform';
 import { Library, MemoryBackend, type LibraryOptions } from '@mdr/storage';
@@ -130,7 +132,7 @@ describe('AppShell', () => {
     await waitFor(async () => expect((await library.listFolders()).find((f) => f.id === child.id)?.parentId).toBeNull());
   }, 20_000);
 
-  it('renames and moves a document without changing source or history', async () => {
+  it('renames and moves a document without changing its source', async () => {
     const user = userEvent.setup();
     const source = '# Keep\r\n\r\n- [ ] task\r\n';
     const { library, id } = await setup(source);
@@ -153,7 +155,6 @@ describe('AppShell', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Move' }));
     await waitFor(async () => expect((await library.getDocument(id)).folderId).toBe(child.id));
     expect((await library.readContent(id)).text).toBe(source);
-    expect(await library.listRevisions(id)).toHaveLength(1);
     act(() => usePreferences.getState().set({ locale: 'ru' }));
     expect(await screen.findByRole('button', { name: 'Действия с папкой: Работа' })).toBeTruthy();
   });
@@ -171,42 +172,15 @@ describe('AppShell', () => {
     expect(within(dialog).getByText(hint)).toBeTruthy();
   });
 
-  it('persists history retention but deletes old revisions only after explicit confirmation', async () => {
+  it('offers no version history anywhere', async () => {
     const user = userEvent.setup();
-    const end = Date.parse('2026-11-07T12:00:00Z');
-    let clock = end - 400 * 86_400_000;
-    const { library, id } = await setup('# History', { now: () => clock });
-    clock = end - 399 * 86_400_000;
-    let version = await library.saveContent(id, 'old', (await library.readContent(id)).version);
-    clock = end;
-    await library.saveContent(id, 'current', version);
+    await setup('# Only the current text\n');
+    expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Version history' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
-    await user.selectOptions(await within(settings).findByRole('combobox', { name: 'History retention' }), 'balanced');
-    await waitFor(async () => expect(await library.getHistoryRetention()).toBe('balanced'));
-    expect(await library.listRevisions(id)).toHaveLength(3);
-    await user.click(within(settings).getByRole('button', { name: 'Clean up history' }));
-    const confirm = screen.getByRole('dialog', { name: 'Delete old revisions?' });
-    await user.click(within(confirm).getByRole('button', { name: 'Delete old revisions' }));
-    await waitFor(async () => expect(await library.listRevisions(id)).toHaveLength(2));
-    expect((await library.readContent(id)).text).toBe('current');
-    expect(await screen.findByText('Removed 1 old revision')).toBeTruthy();
-  });
-
-  it('shows cleanup failures inside the confirmation dialog and keeps it open for retry', async () => {
-    const user = userEvent.setup();
-    const { library } = await setup('# Keep');
-    await library.setHistoryRetention('balanced');
-    vi.spyOn(library, 'pruneHistory').mockRejectedValueOnce(new AppError('storage.failed'));
-    await user.click(screen.getByRole('button', { name: 'Settings' }));
-    const settings = screen.getByRole('dialog', { name: 'Settings' });
-    const cleanup = within(settings).getByRole('button', { name: 'Clean up history' });
-    await waitFor(() => expect(cleanup).not.toBeDisabled());
-    await user.click(cleanup);
-    const confirm = screen.getByRole('dialog', { name: 'Delete old revisions?' });
-    await user.click(within(confirm).getByRole('button', { name: 'Delete old revisions' }));
-    expect(await within(confirm).findByRole('alert')).toHaveTextContent('Local storage failed.');
-    expect(within(confirm).getByRole('button', { name: 'Delete old revisions' })).not.toBeDisabled();
+    expect(within(settings).queryByRole('combobox', { name: 'History retention' })).toBeNull();
+    expect(within(settings).queryByRole('button', { name: 'Clean up history' })).toBeNull();
   });
 
   it('creates a new document inside the open folder, shows it there and saves typed text', async () => {
@@ -227,6 +201,112 @@ describe('AppShell', () => {
     act(() => session.apply([{ from: session.text.length, to: session.text.length, insert: 'typed text' }], 'editor'));
     await waitFor(async () => expect((await library.readContent(created.id)).text).toContain('typed text'), { timeout: 3000 });
   });
+
+  it('creates a code file by name and shows it as source only, without Markdown tools', async () => {
+    const user = userEvent.setup();
+    const { library } = await setup('# Existing\n');
+    await user.click(screen.getByRole('button', { name: 'New file…' }));
+    const dialog = screen.getByRole('dialog', { name: 'New file' });
+    const input = within(dialog).getByLabelText('File name');
+    await user.clear(input);
+    await user.type(input, 'script.py');
+    await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+    await waitFor(async () => expect((await library.listDocuments()).some((d) => d.fileName === 'script.py')).toBe(true));
+    const created = (await library.listDocuments()).find((d) => d.fileName === 'script.py')!;
+    expect(created.title).toBe('script.py');
+    expect((await library.readContent(created.id)).text).toBe('');
+    await waitFor(() => expect(screen.queryByRole('radiogroup', { name: 'View mode' })).toBeNull());
+    expect(screen.queryByRole('toolbar', { name: 'Formatting' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+  });
+
+  it('imports a windows-1251 text file and downloads it in the same encoding', async () => {
+    const saveAs = vi.spyOn(platform, 'saveAs');
+    const { library } = await setup('# Existing\n');
+    const text = 'Журнал работы сервера: всё в порядке, ошибок нет.\r\n'.repeat(10);
+    const bytes = encodeText(text, 'windows-1251');
+    await act(async () => {
+      await addFiles([{ name: 'server.log', bytes, locator: null, fingerprint: null }]);
+    });
+    const doc = (await library.listDocuments()).find((d) => d.fileName === 'server.log')!;
+    expect(doc.encoding).toBe('windows-1251');
+    expect((await library.readContent(doc.id)).text).toBe(text);
+    fireEvent.click(await screen.findByRole('button', { name: 'Download' }));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+    expect(saveAs.mock.calls[0]![1]).toEqual(bytes);
+  });
+
+  it('shows a CSV file as an editable table and writes edits back as CSV text', async () => {
+    const user = userEvent.setup();
+    const { library } = await setup('# Existing\n');
+    await act(async () => {
+      await addFiles([{ name: 'people.csv', bytes: new TextEncoder().encode('name;age\r\nAnna;31\r\n'), locator: null, fingerprint: null }]);
+    });
+    const doc = (await library.listDocuments()).find((d) => d.fileName === 'people.csv')!;
+    const grid = await screen.findByRole('grid', { name: 'people' });
+    expect(screen.getByRole('radio', { name: 'Table' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(grid).getByText('Anna')).toBeInTheDocument();
+    // A2 → type a new name.
+    grid.focus();
+    await user.keyboard('{ArrowDown}Boris{Enter}');
+    await waitFor(async () => expect((await library.readContent(doc.id)).text).toBe('name;age\r\nBoris;31\r\n'), { timeout: 4000 });
+    // Text arriving without key events (on-screen keyboards, IME) starts an edit too: B2.
+    await user.keyboard('{ArrowUp}{ArrowRight}');
+    const cellInput = screen.getByRole('textbox', { name: 'Edit cell B2' });
+    expect(cellInput).toHaveFocus();
+    fireEvent.change(cellInput, { target: { value: '45' } });
+    fireEvent.keyDown(cellInput, { key: 'Enter' });
+    await waitFor(async () => expect((await library.readContent(doc.id)).text).toBe('name;age\r\nBoris;45\r\n'), { timeout: 4000 });
+    await user.click(screen.getByRole('radio', { name: 'Text' }));
+    expect(screen.queryByRole('grid')).toBeNull();
+  });
+
+  it('edits an xlsx file in place and autosaves it with recalculated formulas', async () => {
+    const { library } = await setup('# Existing\n');
+    const bytes = new Uint8Array(readFileSync(resolve(__dirname, '../../../tests/fixtures/files/sample.xlsx')));
+    await act(async () => {
+      await addFiles([{ name: 'report.xlsx', bytes, locator: null, fingerprint: null }]);
+    });
+    const doc = (await library.listDocuments()).find((d) => d.fileName === 'report.xlsx')!;
+    const grid = await screen.findByRole('grid', { name: 'Отчёт' }, { timeout: 8000 });
+    expect(await within(grid).findByText('225')).toBeInTheDocument();
+    const user = userEvent.setup();
+    grid.focus();
+    // B3 (plan for January) 100 → 150; the total in C5 is a formula over C, so edit C3 instead.
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}{ArrowRight}200{Enter}');
+    expect(await within(grid).findByText('330')).toBeInTheDocument();
+    await waitFor(async () => expect((await library.getDocument(doc.id)).contentHash).not.toBe(doc.contentHash), { timeout: 8000 });
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await library.readFile(doc.id)).bytes.slice().buffer as ArrayBuffer);
+    const ws = wb.getWorksheet('Отчёт')!;
+    expect(ws.getCell('C3').value).toBe(200);
+    expect(ws.getCell('C5').value).toMatchObject({ formula: 'SUM(C3:C4)', result: 330 });
+    // The original of import stays for "Restore original".
+    expect(await sha256Hex((await library.readOriginal(doc.id)).bytes)).toBe(await sha256Hex(bytes));
+  }, 30_000);
+
+  it('edits a Word document: view first, then Edit, autosaved into document.xml', async () => {
+    const { library } = await setup('# Existing\n');
+    const bytes = new Uint8Array(readFileSync(resolve(__dirname, '../../../tests/fixtures/files/sample.docx')));
+    await act(async () => {
+      await addFiles([{ name: 'letter.docx', bytes, locator: null, fingerprint: null }]);
+    });
+    const doc = (await library.listDocuments()).find((d) => d.fileName === 'letter.docx')!;
+    const user = userEvent.setup();
+    expect(await screen.findByRole('radio', { name: 'View' }, { timeout: 8000 })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('radio', { name: 'Edit' }));
+    const editor = await screen.findByRole('textbox', { name: 'Document text' });
+    expect(editor.textContent).toContain('Пример документа Word');
+    // jsdom cannot type into ProseMirror; a toolbar edit goes through the same save path.
+    await user.click(screen.getByRole('button', { name: 'Insert table' }));
+    await waitFor(async () => expect((await library.getDocument(doc.id)).contentHash).not.toBe(doc.contentHash), { timeout: 8000 });
+    const { unzipSync, strFromU8 } = await import('fflate');
+    const xml = strFromU8(unzipSync((await library.readFile(doc.id)).bytes)['word/document.xml']!);
+    expect(xml.match(/<w:tbl>/g)).toHaveLength(2);
+    // Untouched content keeps its exact XML (link with its relationship).
+    expect(xml).toContain('<w:hyperlink r:id="rLink"><w:r><w:t>ссылкой</w:t></w:r></w:hyperlink>');
+  }, 30_000);
 
   it('gives each new document in a folder its own name', async () => {
     const { library } = await setup('# Existing\n');
@@ -274,7 +354,7 @@ describe('AppShell', () => {
   it('downloads and trashes the open document from the toolbar, with undo', async () => {
     const saveAs = vi.spyOn(platform, 'saveAs');
     const { library, id } = await setup('# Report\n');
-    fireEvent.click(screen.getByRole('button', { name: 'Download (.md)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
     await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
     const [name, bytes, mime] = saveAs.mock.calls[0]!;
     expect([name, mime]).toEqual(['todo.md', 'text/markdown;charset=utf-8']);
@@ -297,6 +377,42 @@ describe('AppShell', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^ideas/ }));
     fireEvent.click(screen.getAllByRole('button', { name: 'New document' })[0]!);
     await waitFor(async () => expect((await library.listDocuments()).filter((d) => d.tags.includes('ideas'))).toHaveLength(2));
+  });
+
+  it('imports a PDF as a view-only document without an editor and downloads the original', async () => {
+    const saveAs = vi.spyOn(platform, 'saveAs');
+    const { library } = await setup('# Existing\n');
+    const bytes = new TextEncoder().encode('%PDF-1.7\nnot really rendered in jsdom');
+    await act(async () => {
+      await addFiles([{ name: 'Отчёт.pdf', bytes, locator: null, fingerprint: null }]);
+    });
+    const doc = (await library.listDocuments()).find((d) => d.fileName === 'Отчёт.pdf')!;
+    expect(doc).toMatchObject({ kind: 'file', mime: 'application/pdf', title: 'Отчёт' });
+    expect(await screen.findByRole('toolbar', { name: 'View only' })).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'View mode' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Version history' })).toBeNull();
+    expect(getSession(doc.id)).toBeUndefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download original' }));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+    expect(saveAs.mock.calls[0]![0]).toBe('Отчёт.pdf');
+    expect(saveAs.mock.calls[0]![2]).toBe('application/pdf');
+    expect(saveAs.mock.calls[0]![1]).toEqual(bytes);
+    saveAs.mockRestore();
+  });
+
+  it('refuses binary files that are too large or not what their name says', async () => {
+    const { library } = await setup('# Existing\n');
+    await act(async () => {
+      await addFiles([{ name: 'fake.docx', bytes: new TextEncoder().encode('%PDF-1.7'), locator: null, fingerprint: null }]);
+    });
+    expect(await screen.findByText('This file type is not supported.')).toBeInTheDocument();
+    await act(async () => {
+      await addFiles([{ name: 'huge.pdf', bytes: new Uint8Array(50 * 1024 * 1024 + 1), locator: null, fingerprint: null }]);
+    });
+    expect(await screen.findByText('The file is larger than 50 MB.')).toBeInTheDocument();
+    expect((await library.listDocuments()).map((d) => d.fileName)).toEqual(['todo.md']);
   });
 
   it('renders untrusted HTML inert and keeps raw-HTML checkboxes non-interactive', async () => {

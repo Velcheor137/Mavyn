@@ -35,7 +35,9 @@ services:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       TRUST_PROXY: ${TRUST_PROXY:-false}
-      MAX_DOCUMENT_BYTES: ${MAX_DOCUMENT_BYTES:-16777216}
+      MAX_DOCUMENT_BYTES: ${MAX_DOCUMENT_BYTES:-268435456}
+      # View-only binary documents (docx, xlsx, ods, pdf); clients refuse files above 50 MiB.
+      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-52428800}
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
       RUST_LOG: ${RUST_LOG:-info}
     ports:

@@ -290,6 +290,17 @@ export function serverText(id: string): Promise<string> {
   return engine.serverText(id);
 }
 
+/** Server bytes of a conflicted binary document ("Open the other version"). */
+export function serverFile(id: string): Promise<Uint8Array> {
+  if (!engine) return Promise.reject(new Error('not connected'));
+  return engine.serverFile(id);
+}
+
+export function serverOriginal(id: string): Promise<Uint8Array> {
+  if (!engine) return Promise.reject(new Error('not connected'));
+  return engine.serverOriginal(id);
+}
+
 /** For tests. */
 export function resetSyncForTests(): void {
   generation++;

@@ -1,9 +1,11 @@
-import { AppError, encodeUtf8, toAppError, type DocumentSession } from '@mdr/core';
+import { AppError, encodeDocumentText, isTableName, textFormat, toAppError, type DocumentSession } from '@mdr/core';
 import { createMarkdownEditor, type FormatCommand, type MarkdownEditor } from '@mdr/editor';
 import { useTranslation } from '@mdr/i18n';
 import { toggleTask } from '@mdr/markdown-engine';
-import { AlertTriangle, BookOpen, Code2, Columns2, Download, History, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { AlertTriangle, BookOpen, Code2, Columns2, Download, Redo2, Table2, Trash2, Undo2 } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { FileDocumentView } from './FileDocumentView.tsx';
+import { CsvTable } from '../sheets/CsvTable.tsx';
 import { useRendered, useSession } from '../hooks.ts';
 import { usePreferences, type ViewMode } from '../preferences.ts';
 import { useServices } from '../services.tsx';
@@ -15,14 +17,20 @@ import { MarkdownView } from './MarkdownView.tsx';
 import { SaveIndicator } from './SaveIndicator.tsx';
 import { SyncConflictBanner } from './SyncConflictBanner.tsx';
 
-export function DocumentView({ id, onShowHistory, outlineToggle }: { id: string; onShowHistory(): void; outlineToggle: ReactNode }) {
+export function DocumentView({ id, outlineToggle }: { id: string; outlineToggle: ReactNode }) {
   const { t } = useTranslation();
   const session = useSession(id);
   const defaultMode = usePreferences((p) => p.defaultViewMode);
-  const mode = useWorkspace((s) => s.viewModes[id]) ?? defaultMode;
+  const chosenMode = useWorkspace((s) => s.viewModes[id]) ?? defaultMode;
   const meta = useWorkspace((s) => s.documents.find((d) => d.id === id));
+  // CSV/TSV: table or text. Other plain text and code: always the source editor.
+  const table = meta ? isTableName(meta.fileName) : false;
+  const plain = meta ? textFormat(meta.fileName) === 'plain' && !table : false;
+  const mode: ViewMode = plain ? 'source' : table ? (chosenMode === 'source' ? 'source' : 'reader') : chosenMode;
   const { platform } = useServices();
 
+  // Binary documents have no session, editor or outline: only a viewer.
+  if (meta?.kind === 'file') return <FileDocumentView meta={meta} />;
   if (!session || !meta) {
     return <div className="flex-1 grid place-items-center muted">{t('app.loading')}</div>;
   }
@@ -30,7 +38,7 @@ export function DocumentView({ id, onShowHistory, outlineToggle }: { id: string;
   return (
     <div className="flex flex-col flex-1 min-w-0 min-h-0">
       <div className="doc-toolbar" role="toolbar" aria-label={t('document.viewMode')}>
-        <ViewModeSwitch value={mode} onChange={(m) => setViewMode(id, m)} />
+        {!plain && <ViewModeSwitch value={mode} onChange={(m) => setViewMode(id, m)} table={table} />}
         <div className="flex items-center gap-1 ml-auto">
           <SaveIndicator state={session.saveState} />
           <button type="button" className="icon-button" onClick={() => session.undo()} disabled={!session.canUndo} aria-label={t('editor.undo')} title={`${t('editor.undo')} (Ctrl+Z)`}>
@@ -39,13 +47,17 @@ export function DocumentView({ id, onShowHistory, outlineToggle }: { id: string;
           <button type="button" className="icon-button" onClick={() => session.redo()} disabled={!session.canRedo} aria-label={t('editor.redo')} title={`${t('editor.redo')} (Ctrl+Shift+Z)`}>
             <Redo2 size={16} aria-hidden />
           </button>
-          <button type="button" className="icon-button" onClick={onShowHistory} aria-label={t('document.history')} title={t('document.history')}>
-            <History size={16} aria-hidden />
-          </button>
           <button
             type="button"
             className="icon-button"
-            onClick={() => void platform.saveAs(meta.fileName || 'document.md', encodeUtf8({ text: session.text, bom: meta.bom }), 'text/markdown;charset=utf-8').catch(notifyError)}
+            onClick={() => {
+              try {
+                const mime = `${table ? 'text/csv' : plain ? 'text/plain' : 'text/markdown'};charset=${meta.encoding ?? 'utf-8'}`;
+                void platform.saveAs(meta.fileName || 'document.md', encodeDocumentText(session.text, meta), mime).catch(notifyError);
+              } catch (error) {
+                notifyError(error);
+              }
+            }}
             aria-label={t('document.download')}
             title={t('document.download')}
           >
@@ -60,18 +72,25 @@ export function DocumentView({ id, onShowHistory, outlineToggle }: { id: string;
       </div>
       {session.saveState.kind === 'conflict' && <ConflictBanner id={id} />}
       {meta.remote?.conflict && <SyncConflictBanner id={id} />}
-      <DocumentPanes key={id} id={id} session={session} mode={mode} />
+      {table && mode === 'reader'
+        ? <CsvTable key={id} session={session} fileName={meta.fileName} />
+        : <DocumentPanes key={id} id={id} session={session} mode={mode} fileName={meta.fileName} />}
     </div>
   );
 }
 
-function ViewModeSwitch({ value, onChange }: { value: ViewMode; onChange(mode: ViewMode): void }) {
+function ViewModeSwitch({ value, onChange, table = false }: { value: ViewMode; onChange(mode: ViewMode): void; table?: boolean }) {
   const { t } = useTranslation();
-  const options: Array<[ViewMode, string, ReactNode]> = [
-    ['reader', t('document.reader'), <BookOpen key="r" size={15} aria-hidden />],
-    ['source', t('document.source'), <Code2 key="s" size={15} aria-hidden />],
-    ['split', t('document.split'), <Columns2 key="p" size={15} aria-hidden />],
-  ];
+  const options: Array<[ViewMode, string, ReactNode]> = table
+    ? [
+        ['reader', t('sheet.table'), <Table2 key="t" size={15} aria-hidden />],
+        ['source', t('sheet.text'), <Code2 key="s" size={15} aria-hidden />],
+      ]
+    : [
+        ['reader', t('document.reader'), <BookOpen key="r" size={15} aria-hidden />],
+        ['source', t('document.source'), <Code2 key="s" size={15} aria-hidden />],
+        ['split', t('document.split'), <Columns2 key="p" size={15} aria-hidden />],
+      ];
   return (
     <div className="segmented" role="radiogroup" aria-label={t('document.viewMode')}>
       {options.map(([mode, label, icon]) => (
@@ -106,7 +125,7 @@ function ConflictBanner({ id }: { id: string }) {
   );
 }
 
-function DocumentPanes({ id, session, mode }: { id: string; session: DocumentSession; mode: ViewMode }) {
+function DocumentPanes({ id, session, mode, fileName }: { id: string; session: DocumentSession; mode: ViewMode; fileName: string }) {
   const { t } = useTranslation();
   const showReader = mode !== 'source';
   const showEditor = mode !== 'reader';
@@ -163,6 +182,7 @@ function DocumentPanes({ id, session, mode }: { id: string; session: DocumentSes
     editor.current = createMarkdownEditor({
       parent: editorHost.current,
       session,
+      fileName,
       options: { lineNumbers: prefs.editorLineNumbers, wrap: prefs.editorWrap },
       ariaLabel: t('editor.label'),
       onTopLineChange: (line) => {
@@ -179,6 +199,10 @@ function DocumentPanes({ id, session, mode }: { id: string; session: DocumentSes
   useEffect(() => {
     editor.current?.setOptions({ lineNumbers: editorLineNumbers, wrap: editorWrap });
   }, [editorLineNumbers, editorWrap]);
+
+  useEffect(() => {
+    editor.current?.setFileName(fileName);
+  }, [fileName]);
 
   // Restore and remember the reading position.
   const restored = useRef(false);
@@ -220,7 +244,7 @@ function DocumentPanes({ id, session, mode }: { id: string; session: DocumentSes
     <div className={`doc-panes mode-${mode}`}>
       {showEditor && (
         <section className="editor-pane" aria-label={t('editor.label')}>
-          <EditorToolbar onFormat={format} />
+          {textFormat(fileName) === 'markdown' && <EditorToolbar onFormat={format} />}
           <div ref={editorHost} className="editor-host" />
         </section>
       )}

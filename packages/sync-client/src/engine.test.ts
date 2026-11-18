@@ -25,6 +25,7 @@ async function device(server: FakeServer, name: string) {
     onState: (s) => states.push(s),
     onRemoteChange: (ids) => reloaded.push(...ids),
     random: () => 0,
+    filePushDelayMs: 0,
   });
   const text = async (id: string) => (await library.readContent(id)).text;
   const edit = async (id: string, next: string) => {
@@ -135,7 +136,24 @@ describe('SyncEngine', () => {
     await a.engine.syncNow();
     expect(await a.text(doc.id)).toBe('v2\n');
     expect(a.reloaded).toContain(doc.id);
-    expect((await a.library.listRevisions(doc.id)).map((r) => r.reason)).toContain('sync');
+  });
+
+  it('syncs the file encoding of text documents and changes to it', async () => {
+    const server = new FakeServer();
+    const a = await device(server, 'a');
+    const b = await device(server, 'b');
+    const doc = await a.library.createDocument({ text: 'лог\n', fileName: 'server.log', encoding: 'windows-1251', folderId: a.folder.id });
+    await a.engine.syncNow();
+    expect(server.docs.get(doc.id)?.encoding).toBe('windows-1251');
+    await b.engine.syncNow();
+    expect((await b.library.getDocument(doc.id)).encoding).toBe('windows-1251');
+
+    await b.library.updateMeta(doc.id, { encoding: 'utf-8' });
+    await b.engine.syncNow();
+    expect(server.docs.get(doc.id)?.encoding).toBeNull();
+    await a.engine.syncNow();
+    expect((await a.library.getDocument(doc.id)).encoding ?? 'utf-8').toBe('utf-8');
+    expect(a.engine.current.kind).toBe('synced');
   });
 
   it('merges non-overlapping concurrent edits on both devices', async () => {
@@ -201,11 +219,8 @@ describe('SyncEngine', () => {
         expect(server.docs.get(doc.id)?.content).toBe('from B\n');
       } else if (resolution === 'server') {
         await b.engine.useServer(doc.id);
+        // No version history: the local text is discarded (the UI warns before this).
         expect(await b.text(doc.id)).toBe('from A\n');
-        // The discarded local text is still in local history.
-        const history = await b.library.listRevisions(doc.id);
-        const texts = await Promise.all(history.map((r) => b.library.readRevision(r.id)));
-        expect(texts).toContain('from B\n');
       } else {
         const copyId = await b.engine.keepBoth(doc.id, 'my version');
         expect(await b.text(doc.id)).toBe('from A\n');
@@ -509,5 +524,142 @@ describe('SyncEngine folders', () => {
     await a.engine.syncNow();
     await b.engine.syncNow();
     for (const d of [a, b]) expect(await tree(d)).toEqual(['/Archive/', '/Archive/legacy.md']);
+  });
+
+  describe('binary documents', () => {
+    const pdf = (label: string) => new TextEncoder().encode(`%PDF-1.7\n${label}`);
+    const PDF = 'application/pdf';
+
+    it('uploads once, downloads on another device, then syncs only names, moves and deletion', async () => {
+      const server = new FakeServer();
+      const a = await device(server, 'a');
+      const b = await device(server, 'b');
+      const bytes = pdf('report');
+      const doc = await a.library.createFileDocument({ bytes, fileName: 'Отчёт.pdf', mime: PDF, folderId: a.folder.id });
+      await a.engine.syncNow();
+      expect(a.engine.current.kind).toBe('synced');
+      expect(server.docs.get(doc.id)).toMatchObject({ kind: 'file', mime: PDF, content_hash: doc.contentHash });
+
+      await b.engine.syncNow();
+      const copy = await b.library.getDocument(doc.id);
+      expect(copy).toMatchObject({ kind: 'file', mime: PDF, fileName: 'Отчёт.pdf', folderId: b.folder.id });
+      expect((await b.library.readFile(doc.id)).bytes).toEqual(bytes);
+
+      await b.library.updateMeta(doc.id, { fileName: 'Годовой отчёт.pdf' });
+      await b.engine.syncNow();
+      await a.engine.syncNow();
+      expect((await a.library.getDocument(doc.id)).fileName).toBe('Годовой отчёт.pdf');
+      expect(server.docs.get(doc.id)?.revisions).toBe(1);
+
+      await a.library.trash(doc.id);
+      await a.engine.syncNow();
+      await b.engine.syncNow();
+      expect((await b.library.getDocument(doc.id)).deletedAt).not.toBeNull();
+      for (const d of [a, b]) d.engine.stop();
+    });
+
+    it('syncs edits of a file to the other device and keeps the original of import', async () => {
+      const server = new FakeServer();
+      const a = await device(server, 'a');
+      const b = await device(server, 'b');
+      const doc = await a.library.createFileDocument({ bytes: pdf('v1'), fileName: 'plan.pdf', mime: PDF, folderId: a.folder.id });
+      await a.engine.syncNow();
+      await b.engine.syncNow();
+
+      await b.library.saveFile(doc.id, pdf('v2 from b'), doc.contentHash);
+      await b.engine.syncNow();
+      expect(server.docs.get(doc.id)?.bytes).toEqual(pdf('v2 from b'));
+      await a.engine.syncNow();
+      expect((await a.library.readFile(doc.id)).bytes).toEqual(pdf('v2 from b'));
+      expect(a.reloaded).toContain(doc.id);
+      expect((await a.library.readOriginal(doc.id)).bytes).toEqual(pdf('v1'));
+
+      // A third device joining later gets the current bytes and the original.
+      const c = await device(server, 'c');
+      await c.engine.syncNow();
+      expect((await c.library.readFile(doc.id)).bytes).toEqual(pdf('v2 from b'));
+      expect((await c.library.readOriginal(doc.id)).bytes).toEqual(pdf('v1'));
+      for (const d of [a, b, c]) expect(d.engine.current.kind).toBe('synced');
+    });
+
+    for (const resolution of ['mine', 'server', 'both'] as const) {
+      it(`resolves a file edited on two devices: ${resolution}`, async () => {
+        const server = new FakeServer();
+        const a = await device(server, 'a');
+        const b = await device(server, 'b');
+        const doc = await a.library.createFileDocument({ bytes: pdf('base'), fileName: 'c.pdf', mime: PDF, folderId: a.folder.id });
+        await a.engine.syncNow();
+        await b.engine.syncNow();
+        await a.library.saveFile(doc.id, pdf('from A'), doc.contentHash);
+        await b.library.saveFile(doc.id, pdf('from B'), doc.contentHash);
+        await a.engine.syncNow();
+        await b.engine.syncNow();
+        expect(b.engine.current.kind).toBe('conflict');
+        expect((await b.library.getDocument(doc.id)).remote?.conflict).not.toBeNull();
+        // No byte merge: the server keeps A's version until B decides.
+        expect(server.docs.get(doc.id)?.bytes).toEqual(pdf('from A'));
+        expect(await b.engine.serverFile(doc.id)).toEqual(pdf('from A'));
+
+        if (resolution === 'mine') {
+          await b.engine.keepMine(doc.id);
+          expect(server.docs.get(doc.id)?.bytes).toEqual(pdf('from B'));
+        } else if (resolution === 'server') {
+          await b.engine.useServer(doc.id);
+          expect((await b.library.readFile(doc.id)).bytes).toEqual(pdf('from A'));
+        } else {
+          const copyId = await b.engine.keepBoth(doc.id, 'my version');
+          expect((await b.library.readFile(doc.id)).bytes).toEqual(pdf('from A'));
+          expect((await b.library.readFile(copyId)).bytes).toEqual(pdf('from B'));
+          expect((await b.library.getDocument(copyId)).fileName).toBe('c (my version).pdf');
+        }
+        expect(b.engine.current.kind).toBe('synced');
+        await a.engine.syncNow();
+        expect(a.engine.current.kind).toBe('synced');
+      });
+    }
+
+    it('retries a lost upload response without uploading twice', async () => {
+      const server = new FakeServer();
+      const a = await device(server, 'a');
+      const doc = await a.library.createFileDocument({ bytes: pdf('lost'), fileName: 'lost.pdf', mime: PDF, folderId: a.folder.id });
+      server.dropResponseOf = 'uploadFile';
+      await a.engine.syncNow();
+      expect(a.engine.current.kind).toBe('offline');
+      await a.engine.syncNow();
+      expect(a.engine.current.kind).toBe('synced');
+      expect(server.docs.size).toBe(1);
+      expect((await a.library.getDocument(doc.id)).remote?.baseRevisionId).toBe(server.docs.get(doc.id)?.head_revision_id);
+      a.engine.stop();
+    });
+
+    it('refuses a downloaded file whose bytes do not match the announced hash', async () => {
+      const server = new FakeServer();
+      const a = await device(server, 'a');
+      const b = await device(server, 'b');
+      const doc = await a.library.createFileDocument({ bytes: pdf('real'), fileName: 'x.pdf', mime: PDF, folderId: a.folder.id });
+      await a.engine.syncNow();
+      server.docs.get(doc.id)!.bytes = pdf('tampered');
+      await b.engine.syncNow();
+      expect(b.engine.current.kind).not.toBe('synced');
+      await expect(b.library.getDocument(doc.id)).rejects.toMatchObject({ code: 'document.not_found' });
+      for (const d of [a, b]) d.engine.stop();
+    });
+
+    it('re-reads the feed once when the saved cursor predates binary documents', async () => {
+      const server = new FakeServer();
+      const a = await device(server, 'a');
+      const b = await device(server, 'b');
+      await a.library.createFileDocument({ bytes: pdf('old'), fileName: 'old.pdf', mime: PDF, folderId: a.folder.id });
+      await a.engine.syncNow();
+      // B synced with an older version: its cursor is past the file it was never shown.
+      const legacy = { ...b.connection, cursor: String(server.docs.size + 10) };
+      delete legacy.files;
+      const engine = new SyncEngine(b.library, server.client(), legacy, { saveConnection: async () => {} });
+      await engine.syncNow();
+      expect((await b.library.listDocuments()).map((d) => d.fileName)).toContain('old.pdf');
+      expect(engine.conn.files).toBe(true);
+      a.engine.stop();
+      b.engine.stop();
+    });
   });
 });

@@ -579,6 +579,10 @@ body {
 .banner-warning {
   background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface));
 }
+.banner-info {
+  margin: 0;
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+}
 .banner p {
   margin: 2px 0 0;
 }
@@ -889,41 +893,6 @@ body {
   font-size: 11px;
   color: var(--color-fg-subtle);
   text-transform: uppercase;
-}
-.history {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 16px;
-  min-height: 320px;
-}
-@media (max-width: 640px) {
-  .history {
-    grid-template-columns: 1fr;
-  }
-}
-.history-list {
-  display: grid;
-  gap: 2px;
-  align-content: start;
-  max-height: 60vh;
-  overflow-y: auto;
-}
-.history-item {
-  display: grid;
-  width: 100%;
-  text-align: left;
-  padding: 6px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.history-item.active {
-  background: var(--color-active);
-}
-.history-diff {
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  min-width: 0;
 }
 .diff {
   max-height: 50vh;
@@ -1294,6 +1263,198 @@ details.callout > summary {
 }
 
 /* ---------- Print ---------- */
+/* ---------- View-only binary documents (docx, xlsx, ods, pdf) ---------- */
+.file-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  outline: none;
+  background: var(--color-bg);
+}
+.file-pane-editor {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.file-pane-editor > .reader-progress {
+  display: none;
+}
+.file-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-fg-muted);
+  padding: 0 4px;
+}
+.file-loading {
+  padding: 32px;
+  text-align: center;
+}
+.file-error {
+  margin: 24px auto;
+  max-width: var(--reader-width);
+}
+.file-docx {
+  min-width: min-content;
+}
+
+.file-sheet {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.sheet-tabs {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+}
+.sheet-tab {
+  padding: 6px 12px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  white-space: nowrap;
+}
+.sheet-tab:hover {
+  background: var(--color-hover);
+}
+.sheet-tab[aria-selected='true'] {
+  background: var(--color-surface);
+  color: var(--color-fg);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+.sheet-scroll {
+  padding: 12px;
+}
+.sheet-table {
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  background: var(--color-surface);
+}
+.sheet-table th,
+.sheet-table td {
+  border: 1px solid var(--color-border);
+  padding: 3px 8px;
+  white-space: pre;
+  max-width: 32rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+.sheet-table thead th,
+.sheet-table tbody th {
+  background: var(--color-code-bg);
+  color: var(--color-fg-muted);
+  font-weight: 500;
+  text-align: center;
+  position: sticky;
+}
+.sheet-table thead th {
+  top: 0;
+  z-index: 2;
+}
+.sheet-table tbody th {
+  left: 0;
+  z-index: 1;
+  min-width: 3em;
+}
+.sheet-more {
+  margin: 12px 0;
+}
+
+.file-pdf {
+  display: flex;
+  flex-direction: column;
+  /* `safe`: a page wider than the pane stays scrollable from its left edge. */
+  align-items: safe center;
+}
+.pdf-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  align-self: stretch;
+  justify-content: center;
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--color-bg) 92%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+.pdf-zoom {
+  min-width: 3.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.pdf-pages {
+  margin-left: 12px;
+}
+.pdf-pages-list {
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  gap: 16px;
+  padding: 16px;
+  max-width: 100%;
+}
+.pdf-page {
+  position: relative;
+  background: white;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.18);
+  max-width: none;
+}
+.pdf-page canvas {
+  display: block;
+}
+/* Minimal pdf.js text layer: transparent text over the canvas for selection and copying. */
+.pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  forced-color-adjust: none;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-page .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.pdf-page .textLayer > :not(.markedContent),
+.pdf-page .textLayer .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-page .textLayer .markedContent {
+  display: contents;
+}
+.pdf-page .textLayer ::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
 @media print {
   .sidebar-wrap,
   .topbar,
@@ -1388,4 +1549,382 @@ details.callout > summary {
 .auth-subtitle {
   font-size: 16px;
   font-weight: 600;
+}
+
+/* Spreadsheet editor (xlsx, ods, csv). Cells keep a white "paper" in both themes like the file. */
+.sheet-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.sheet-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+.sheet-toolbar .icon-button[aria-pressed='true'] {
+  background: var(--color-active);
+  color: var(--color-accent);
+}
+.sheet-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--color-border);
+}
+.sheet-select {
+  height: 28px;
+  width: auto;
+  max-width: 11rem;
+  padding: 0 6px;
+  font-size: 12px;
+}
+.sheet-color {
+  position: relative;
+  cursor: pointer;
+}
+.sheet-color input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.sheet-formula-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+.sheet-address {
+  min-width: 4.5rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-fg-muted);
+}
+.sheet-formula-input {
+  flex: 1;
+  height: 28px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.sheet-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--sheet-header-w) 1fr;
+  grid-template-rows: var(--sheet-header-h) 1fr;
+  font-size: 13px;
+  --sheet-line: #e2e2e6;
+}
+.sheet-corner,
+.sheet-col-headers,
+.sheet-row-headers {
+  background: var(--color-surface-2, var(--color-surface));
+  overflow: hidden;
+  position: relative;
+  user-select: none;
+}
+.sheet-corner {
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+.sheet-col-headers {
+  border-bottom: 1px solid var(--color-border);
+}
+.sheet-row-headers {
+  border-right: 1px solid var(--color-border);
+}
+.sheet-header-track {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+.sheet-col-header,
+.sheet-row-header {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--color-fg-muted);
+}
+.sheet-col-header {
+  top: 0;
+  height: 100%;
+  border-right: 1px solid var(--color-border);
+}
+.sheet-row-header {
+  left: 0;
+  width: 100%;
+  border-bottom: 1px solid var(--color-border);
+}
+.sheet-col-header.active,
+.sheet-row-header.active {
+  background: var(--color-active);
+  color: var(--color-accent);
+}
+.sheet-resize {
+  position: absolute;
+  z-index: 2;
+}
+.sheet-resize-col {
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sheet-resize-row {
+  left: 0;
+  bottom: -4px;
+  height: 8px;
+  width: 100%;
+  cursor: row-resize;
+  touch-action: none;
+}
+.sheet-scroller {
+  overflow: auto;
+  position: relative;
+  outline: none;
+  background: #ffffff;
+  color: #1f1f24;
+  overscroll-behavior: contain;
+}
+.sheet-canvas {
+  position: relative;
+  background-color: #ffffff;
+}
+.sheet-cell {
+  position: absolute;
+  display: flex;
+  align-items: flex-end;
+  padding: 1px 4px;
+  overflow: hidden;
+  white-space: pre;
+  box-shadow: inset -1px -1px 0 var(--sheet-line);
+  line-height: 1.25;
+}
+.sheet-cell > span {
+  overflow: hidden;
+  text-overflow: clip;
+}
+.sheet-cell[data-error='true'] {
+  color: #c92a2a;
+}
+.sheet-merged {
+  background-color: #ffffff;
+  z-index: 1;
+}
+/* Grid lines for empty cells: a repeating background on the canvas is not possible with uneven
+   sizes, so the scroller shows a light dotted texture instead. */
+.sheet-canvas::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(to right, var(--sheet-line) 1px, transparent 1px), linear-gradient(to bottom, var(--sheet-line) 1px, transparent 1px);
+  background-size: 69px 20px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+.sheet-selection {
+  position: absolute;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+.sheet-active {
+  position: absolute;
+  border: 2px solid var(--color-accent);
+  pointer-events: none;
+  z-index: 3;
+}
+.sheet-cell-editor {
+  position: absolute;
+  z-index: 4;
+  margin: 0;
+  padding: 1px 4px;
+  border: 2px solid var(--color-accent);
+  background: #ffffff;
+  color: #1f1f24;
+  font: inherit;
+  resize: none;
+  outline: none;
+  display: block;
+  min-width: 120px;
+  min-height: 24px;
+}
+.sheet-cell-editor.idle {
+  opacity: 0;
+  pointer-events: none;
+  caret-color: transparent;
+}
+.sheet-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.sheet-tab-input {
+  height: 26px;
+  width: 9rem;
+}
+.sheet-notice {
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--color-fg-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+@media (max-width: 640px) {
+  .sheet-select {
+    max-width: 8rem;
+  }
+  .sheet-address {
+    min-width: 3rem;
+  }
+}
+
+/* Word editor: a white page of the document's width; styles come from the document itself. */
+.docx-file,
+.docx-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.docx-mode {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.docx-view-scroll,
+.docx-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.docx-scroll {
+  background: var(--color-bg);
+  padding: 16px 8px 48px;
+}
+.docx-sheet {
+  margin: 0 auto;
+  background: #ffffff;
+  color: #1f1f24;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  padding: 48px;
+  min-height: 70vh;
+}
+@media (max-width: 640px) {
+  .docx-sheet {
+    padding: 16px;
+  }
+}
+.docx-page {
+  outline: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 11pt;
+  line-height: 1.35;
+}
+.docx-page p {
+  margin: 0 0 6px;
+}
+.docx-page p[data-list] {
+  position: relative;
+  padding-left: calc(1.5em + var(--docx-level, 0) * 1.5em);
+}
+.docx-page p[data-level='1'] { --docx-level: 1; }
+.docx-page p[data-level='2'] { --docx-level: 2; }
+.docx-page p[data-level='3'] { --docx-level: 3; }
+.docx-page p[data-list='bullet']::before {
+  content: '•';
+  position: absolute;
+  left: calc(0.4em + var(--docx-level, 0) * 1.5em);
+}
+.docx-page {
+  counter-reset: docx-item;
+}
+.docx-page p:not([data-list='decimal']) {
+  counter-reset: docx-item;
+}
+.docx-page p[data-list='decimal'] {
+  counter-increment: docx-item;
+}
+.docx-page p[data-list='decimal']::before {
+  content: counter(docx-item) '.';
+  position: absolute;
+  left: calc(var(--docx-level, 0) * 1.5em);
+}
+.docx-page table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  table-layout: fixed;
+}
+.docx-page td,
+.docx-page th {
+  border: 1px solid #bfbfc6;
+  padding: 2px 6px;
+  vertical-align: top;
+  min-width: 2em;
+}
+.docx-page .selectedCell {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+}
+.docx-page .docx-tab {
+  display: inline-block;
+  min-width: 2em;
+}
+.docx-page .docx-link {
+  color: #1155cc;
+  text-decoration: underline;
+}
+.docx-page .docx-image {
+  max-width: 100%;
+  height: auto;
+  vertical-align: bottom;
+}
+.docx-page .ProseMirror-selectednode,
+.docx-page img.ProseMirror-selectednode {
+  outline: 2px solid var(--color-accent);
+}
+.docx-opaque {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #ececf1;
+  color: #5b5d66;
+  font-size: 0.85em;
+  user-select: none;
+}
+.docx-opaque-block {
+  display: block;
+  margin: 4px 0;
+}
+.docx-hidden {
+  display: none;
+}
+.docx-highlight select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.docx-image-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.docx-image-size .input {
+  width: 5.5rem;
+  height: 28px;
 }

@@ -1,5 +1,10 @@
 /** Domain models shared by all clients. See docs/architecture.md §4. */
 
+/** True for immutable binary documents (docx, xlsx, ods, pdf). */
+export function isFileDocument(meta: { kind?: string }): boolean {
+  return meta.kind === 'file';
+}
+
 export type Iso8601 = string;
 
 export type LibraryKind = 'local' | 'server';
@@ -44,17 +49,35 @@ export interface FileFingerprint {
   contentHash: string;
 }
 
+/** `text` documents are edited Markdown/plain text; `file` documents are immutable binaries. */
+export type DocumentKind = 'text' | 'file';
+
 export interface DocumentMeta {
   id: string;
+  /** Absent on documents stored before binary support: they are all `text`. */
+  kind?: DocumentKind;
+  /** MIME type of a `file` document (see `FILE_TYPES`). */
+  mime?: string;
   libraryId: string;
   folderId: string | null;
   title: string;
   fileName: string;
   source: DocumentSource;
-  headRevisionId: string;
   contentHash: string;
-  /** Whether the stored file started with a UTF-8 BOM; written back on save. */
+  /** Whether the file started with a BOM (of its encoding); written back on save. */
   bom: boolean;
+  /** WHATWG encoding of the file on disk (`windows-1251`, …); absent means UTF-8. Text documents only. */
+  encoding?: string;
+  /**
+   * Original bytes of a text file imported in a non-UTF-8 encoding, kept (in the `files` store) until
+   * the first edit so "Reopen with encoding" can decode them again if detection guessed wrong.
+   */
+  importBytesHash?: string;
+  /**
+   * Binary documents: SHA-256 of the bytes the document was imported with ("original of import",
+   * in the `files` store). `contentHash` follows every edit; the original never changes.
+   */
+  originalHash?: string;
   tags: string[];
   favorite: boolean;
   createdAt: Iso8601;
@@ -84,19 +107,8 @@ export interface RemoteRef {
    */
   baseFileName?: string;
   baseFolderId?: string | null;
-}
-
-export type RevisionReason = 'import' | 'edit' | 'restore' | 'merge' | 'conflict' | 'sync';
-
-export interface Revision {
-  id: string;
-  documentId: string;
-  parentRevisionId: string | null;
-  contentHash: string;
-  size: number;
-  authorId: string | null;
-  reason: RevisionReason;
-  createdAt: Iso8601;
+  /** File encoding last known on the server (null = UTF-8); absent on copies synced before. */
+  baseEncoding?: string | null;
 }
 
 export type SyncStatus = 'synced' | 'pending' | 'syncing' | 'offline' | 'conflict' | 'error';

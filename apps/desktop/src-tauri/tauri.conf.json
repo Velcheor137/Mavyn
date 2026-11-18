@@ -48,6 +48,82 @@
         "description": "Markdown document",
         "role": "Editor",
         "mimeType": "text/markdown"
+      },
+      {
+        "ext": [
+          "txt",
+          "log",
+          "csv",
+          "tsv",
+          "json",
+          "yaml",
+          "yml",
+          "toml",
+          "ini",
+          "conf",
+          "xml",
+          "js",
+          "mjs",
+          "ts",
+          "tsx",
+          "jsx",
+          "py",
+          "rs",
+          "go",
+          "java",
+          "kt",
+          "c",
+          "h",
+          "cpp",
+          "hpp",
+          "cs",
+          "rb",
+          "php",
+          "sh",
+          "sql",
+          "css",
+          "scss"
+        ],
+        "name": "Text or code file",
+        "description": "Plain text or source code",
+        "role": "Editor",
+        "mimeType": "text/plain"
+      },
+      {
+        "ext": [
+          "docx"
+        ],
+        "name": "Word document",
+        "description": "Word document",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      {
+        "ext": [
+          "xlsx"
+        ],
+        "name": "Excel workbook",
+        "description": "Excel workbook",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      {
+        "ext": [
+          "ods"
+        ],
+        "name": "OpenDocument spreadsheet",
+        "description": "OpenDocument spreadsheet",
+        "role": "Editor",
+        "mimeType": "application/vnd.oasis.opendocument.spreadsheet"
+      },
+      {
+        "ext": [
+          "pdf"
+        ],
+        "name": "PDF document",
+        "description": "PDF document",
+        "role": "Viewer",
+        "mimeType": "application/pdf"
       }
     ],
     "linux": {

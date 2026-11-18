@@ -3,7 +3,8 @@ import { fingerprint } from './hash.ts';
 import { TextHistory } from './history.ts';
 import { applyEdits, type TextEdit } from './text.ts';
 
-export type EditOrigin = 'editor' | 'task' | 'history' | 'external';
+/** `table`: the CSV/TSV table view rewrote the text. */
+export type EditOrigin = 'editor' | 'task' | 'history' | 'external' | 'table';
 
 export interface EditEvent {
   edits: TextEdit[];

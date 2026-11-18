@@ -10,7 +10,8 @@ data class IncomingFile(val id: String, val name: String, val bytes: ByteArray)
 class IncomingStore(private val root: File, private val removeTree: (File) -> Boolean = { it.deleteRecursively() }) {
     companion object {
         const val MAX_ENTRIES = 32
-        private const val MAX_TOTAL = 64L * 1024 * 1024
+        // Room for one maximal text file plus a queue of others.
+        private const val MAX_TOTAL = 512L * 1024 * 1024
         private val ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
     }
 
@@ -24,9 +25,8 @@ class IncomingStore(private val root: File, private val removeTree: (File) -> Bo
 
     fun put(name: String, bytes: ByteArray): String {
         SafPolicy.requireName(name)
-        SafPolicy.requireSize(bytes.size.toLong())
-        try { Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)) }
-        catch (error: java.nio.charset.CharacterCodingException) { throw SafFailure("file.not_utf8") }
+        SafPolicy.requireSize(bytes.size.toLong(), SafPolicy.maxBytes(name))
+        // Text (any encoding) and documents are validated by content in the app.
         if (name.length > 255 || name.contains('/') || name.contains('\\') || name.contains('\u0000')) throw SafFailure("file.unsupported")
         val existing = entries()
         if (existing.size >= MAX_ENTRIES || existing.sumOf { File(it, "content").length() } + bytes.size > MAX_TOTAL) throw SafFailure("storage.busy")
@@ -46,8 +46,9 @@ class IncomingStore(private val root: File, private val removeTree: (File) -> Bo
 
     fun peek(): IncomingFile? = entries().firstOrNull()?.let {
         val content = File(it, "content")
-        SafPolicy.requireSize(content.length())
-        IncomingFile(it.name, File(it, "name").readText(Charsets.UTF_8), content.readBytes())
+        val name = File(it, "name").readText(Charsets.UTF_8)
+        SafPolicy.requireSize(content.length(), SafPolicy.maxBytes(name))
+        IncomingFile(it.name, name, content.readBytes())
     }
 
     fun ack(id: String) {

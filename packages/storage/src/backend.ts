@@ -5,25 +5,34 @@
  * Inside `transaction()` callbacks only `tx` operations may be awaited — awaiting anything else
  * (e.g. crypto) would auto-commit an IndexedDB transaction.
  */
-export type StoreName = 'documents' | 'contents' | 'revisions' | 'folders' | 'handles' | 'settings' | 'syncBases';
+export type StoreName = 'documents' | 'contents' | 'folders' | 'handles' | 'settings' | 'syncBases' | 'files';
 
 export const STORE_KEYS: Record<StoreName, string> = {
   documents: 'id',
   contents: 'hash',
-  revisions: 'id',
   folders: 'id',
   handles: 'documentId',
   settings: 'key',
   syncBases: 'documentId',
+  files: 'hash',
 };
+
+/**
+ * Bytes of a binary document (docx, xlsx, ods, pdf), content-addressed by SHA-256.
+ * The MIME type lives on the document. Native backends store these outside the JSON records, and
+ * `getAll('files')` may omit `bytes` there: never scan this store for content.
+ */
+export interface FileRow {
+  hash: string;
+  size: number;
+  bytes: Uint8Array;
+}
 
 export interface Tx {
   get<T>(store: StoreName, key: string): Promise<T | undefined>;
   put<T>(store: StoreName, value: T): Promise<void>;
   delete(store: StoreName, key: string): Promise<void>;
   getAll<T>(store: StoreName): Promise<T[]>;
-  /** Revisions by `documentId`. */
-  revisionsOf<T>(documentId: string): Promise<T[]>;
 }
 
 export interface Backend {
@@ -75,10 +84,6 @@ export class MemoryBackend implements Backend {
         this.table(store).delete(key);
       },
       getAll: async <T>(store: StoreName) => [...this.table(store).values()].map((v) => structuredClone(v)) as T[],
-      revisionsOf: async <T>(documentId: string) =>
-        [...this.table('revisions').values()]
-          .filter((r) => (r as { documentId: string }).documentId === documentId)
-          .map((v) => structuredClone(v)) as T[],
     };
   }
 

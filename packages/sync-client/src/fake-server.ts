@@ -2,6 +2,7 @@ import { sha256Hex, uuidv7 } from '@mdr/core';
 import { SyncHttpError, type SyncApi } from './api.ts';
 import type {
   ChangesResponse,
+  ReplaceFileRequest,
   CreateDocumentRequest,
   CreateFolderRequest,
   DocumentInfo,
@@ -12,10 +13,15 @@ import type {
   UpdateContentRequest,
   UpdateDocumentMetaRequest,
   UpdateFolderRequest,
+  UploadFileRequest,
 } from './protocol.ts';
 
 interface StoredDoc extends DocumentInfo {
   content: string;
+  /** Bytes of a `file` document. */
+  bytes?: Uint8Array;
+  /** Original of import of a `file` document. */
+  original?: Uint8Array;
   seq: number;
   revisions: number;
 }
@@ -38,7 +44,9 @@ export class FakeServer {
   /** The fake serves one library; a brand-new server has none until one is created. */
   libraries: LibraryInfo[] = [{ id: this.libraryId, name: 'Shared', role: 'owner' }];
   /** The next call of this operation fails as if the network dropped *after* the server applied it. */
-  dropResponseOf: 'createDocument' | 'updateContent' | 'deleteDocument' | null = null;
+  dropResponseOf: 'createDocument' | 'updateContent' | 'deleteDocument' | 'uploadFile' | 'replaceFile' | null = null;
+  /** Cursors handed out without `files=1` would hide files; the fake always includes them. */
+  changesCalls = 0;
   offline = false;
   /** When set, the server has no users yet and accepts this setup token once. */
   setupToken: string | null = null;
@@ -89,7 +97,14 @@ export class FakeServer {
           this.libraries = [library];
           return library;
         }),
-      changes: (_lib, cursor) => guard(async () => this.changes(cursor)),
+      changes: (_lib, cursor) => guard(async () => {
+        this.changesCalls++;
+        return this.changes(cursor);
+      }),
+      uploadFile: (_lib, req, bytes, opId) => guard(() => this.upload(req, bytes, opId), 'uploadFile'),
+      downloadFile: (id) => guard(async () => this.download(id)),
+      replaceFile: (id, req, bytes, opId) => guard(() => this.replaceFile(id, req, bytes, opId), 'replaceFile'),
+      downloadOriginal: (id) => guard(async () => this.download(id, true)),
       getDocument: (id) => guard(async () => this.get(id)),
       createDocument: (_lib, req, opId) => guard(() => this.create(req, opId), 'createDocument'),
       updateContent: (id, req, opId) => guard(() => this.update(id, req, opId), 'updateContent'),
@@ -102,8 +117,59 @@ export class FakeServer {
   }
 
   private info(doc: StoredDoc): DocumentInfo {
-    const { content: _c, seq: _s, revisions: _r, ...info } = doc;
+    const { content: _c, seq: _s, revisions: _r, bytes: _b, original: _o, ...info } = doc;
     return info;
+  }
+
+  async upload(req: UploadFileRequest, bytes: Uint8Array, opId: string): Promise<DocumentInfo> {
+    const replay = this.ops.get(opId);
+    if (replay) return replay;
+    if (this.docs.has(req.id)) throw new SyncHttpError(409, 'sync.conflict', null);
+    if ((await sha256Hex(bytes)) !== req.sha256) throw new SyncHttpError(400, 'file.hash_mismatch', null);
+    const doc: StoredDoc = {
+      id: req.id,
+      library_id: this.libraryId,
+      folder_id: this.liveFolder(req.folder_id) ? req.folder_id : null,
+      title: req.file_name.replace(/\.[^.]+$/, ''),
+      file_name: req.file_name,
+      head_revision_id: uuidv7(),
+      content_hash: req.sha256,
+      updated_at: new Date().toISOString(),
+      deleted_at: null,
+      kind: 'file',
+      mime: req.mime,
+      original_hash: req.sha256,
+      content: '',
+      bytes: bytes.slice(),
+      original: bytes.slice(),
+      seq: ++this.seq,
+      revisions: 1,
+    };
+    this.docs.set(doc.id, doc);
+    this.ops.set(opId, this.info(doc));
+    return this.info(doc);
+  }
+
+  private download(id: string, original = false): Uint8Array {
+    const doc = this.docs.get(id);
+    if (!doc || doc.deleted_at) throw new SyncHttpError(404, 'document.not_found', null);
+    if (doc.kind !== 'file' || !doc.bytes) throw new SyncHttpError(409, 'document.not_file', null);
+    return original ? doc.original ?? doc.bytes : doc.bytes;
+  }
+
+  async replaceFile(id: string, req: ReplaceFileRequest, bytes: Uint8Array, opId: string): Promise<DocumentInfo> {
+    const replay = this.ops.get(opId);
+    if (replay) return replay;
+    const doc = this.docs.get(id);
+    if (!doc || doc.deleted_at) throw new SyncHttpError(404, 'document.not_found', null);
+    if (doc.kind !== 'file') throw new SyncHttpError(409, 'document.not_file', null);
+    if ((await sha256Hex(bytes)) !== req.sha256) throw new SyncHttpError(400, 'file.hash_mismatch', null);
+    if (doc.head_revision_id !== req.base_revision_id) {
+      throw new SyncHttpError(409, 'sync.conflict', { head_revision_id: doc.head_revision_id, content_hash: doc.content_hash });
+    }
+    Object.assign(doc, { bytes: bytes.slice(), content_hash: req.sha256, head_revision_id: uuidv7(), seq: ++this.seq, revisions: doc.revisions + 1, updated_at: new Date().toISOString() });
+    this.ops.set(opId, this.info(doc));
+    return this.info(doc);
   }
 
   private changes(cursor: string): ChangesResponse {
@@ -170,13 +236,19 @@ export class FakeServer {
     const fileName = req.file_name !== req.base_file_name && doc.file_name === req.base_file_name ? req.file_name : doc.file_name;
     const moveOk = req.folder_id === null || this.liveFolder(req.folder_id);
     const folderId = req.folder_id !== req.base_folder_id && doc.folder_id === req.base_folder_id && moveOk ? req.folder_id : doc.folder_id;
-    if (fileName !== doc.file_name || folderId !== doc.folder_id) Object.assign(doc, { file_name: fileName, folder_id: folderId, seq: ++this.seq, updated_at: new Date().toISOString() });
+    const norm = (label: string | null | undefined) => (label && label !== 'utf-8' ? label : null);
+    const current = norm(doc.encoding);
+    const encoding = req.encoding !== undefined && norm(req.encoding) !== current && current === norm(req.base_encoding) ? norm(req.encoding) : current;
+    if (fileName !== doc.file_name || folderId !== doc.folder_id || encoding !== current) {
+      Object.assign(doc, { file_name: fileName, folder_id: folderId, encoding, seq: ++this.seq, updated_at: new Date().toISOString() });
+    }
     return this.info(doc);
   }
 
   private get(id: string): DocumentWithContent {
     const doc = this.docs.get(id);
     if (!doc || doc.deleted_at) throw new SyncHttpError(404, 'document.not_found', null);
+    if (doc.kind === 'file') throw new SyncHttpError(409, 'document.not_text', null);
     return { ...this.info(doc), content: doc.content };
   }
 
@@ -190,6 +262,7 @@ export class FakeServer {
       folder_id: this.liveFolder(req.folder_id ?? null) ? req.folder_id! : null,
       title: req.file_name,
       file_name: req.file_name,
+      encoding: req.encoding && req.encoding !== 'utf-8' ? req.encoding : null,
       head_revision_id: uuidv7(),
       content_hash: await sha256Hex(req.content),
       updated_at: new Date().toISOString(),
@@ -208,6 +281,7 @@ export class FakeServer {
     if (replay) return replay;
     const doc = this.docs.get(id);
     if (!doc || doc.deleted_at) throw new SyncHttpError(404, 'document.not_found', null);
+    if (doc.kind === 'file') throw new SyncHttpError(409, 'document.not_text', null);
     if (doc.head_revision_id !== req.base_revision_id) {
       throw new SyncHttpError(409, 'sync.conflict', { head_revision_id: doc.head_revision_id, content_hash: doc.content_hash });
     }

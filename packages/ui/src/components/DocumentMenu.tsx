@@ -1,26 +1,39 @@
 import type { DocumentMeta, DocumentSession } from '@mdr/core';
-import { encodeUtf8 } from '@mdr/core';
+import { encodeDocumentText, textFormat } from '@mdr/core';
 import { useTranslation } from '@mdr/i18n';
 import { renderToHtml } from '@mdr/markdown-engine';
 import * as Menu from '@radix-ui/react-dropdown-menu';
-import { FileCode, FileDown, FolderInput, MoreHorizontal, Pencil, Printer, Star, StarOff, Trash2 } from 'lucide-react';
+import { FileCode, FileDown, FolderInput, History, Languages, MoreHorizontal, Pencil, Printer, Star, StarOff, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { EncodingDialog, encodingName } from './EncodingDialog.tsx';
+import { hasDistinctOriginal, restoreOriginal } from '../file-documents.ts';
 import { LibraryDialog, type LibraryAction } from './LibraryDialogs.tsx';
 import { usePreferences } from '../preferences.ts';
 import { useServices } from '../services.tsx';
-import { trashDocument, updateDocument } from '../workspace.ts';
+import { notifyError, trashDocument, updateDocument } from '../workspace.ts';
 import { buildStandaloneHtml } from '../export.ts';
 
-export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: DocumentSession }) {
+/** `session` is absent for view-only binary documents: they have no Markdown/HTML export. */
+export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session?: DocumentSession }) {
   const { t } = useTranslation();
   const { platform } = useServices();
   const [action, setAction] = useState<LibraryAction | null>(null);
+  const [encodingOpen, setEncodingOpen] = useState(false);
+  const markdown = textFormat(meta.fileName) === 'markdown';
   const profile = usePreferences((p) => p.profile);
   const allowHtml = usePreferences((p) => p.allowHtml);
   const baseName = meta.fileName.replace(/\.[^.]+$/, '') || 'document';
 
-  const exportMarkdown = () => void platform.saveAs(`${baseName}.md`, encodeUtf8({ text: session.text, bom: meta.bom }), 'text/markdown;charset=utf-8');
+  const exportMarkdown = () => {
+    if (!session) return;
+    try {
+      void platform.saveAs(`${baseName}.md`, encodeDocumentText(session.text, meta), `text/markdown;charset=${meta.encoding ?? 'utf-8'}`).catch(notifyError);
+    } catch (error) {
+      notifyError(error);
+    }
+  };
   const exportHtml = () => {
+    if (!session) return;
     const body = renderToHtml(session.text, { profile, allowHtml });
     const html = buildStandaloneHtml(meta.title, body, document.documentElement.lang || 'en');
     void platform.saveAs(`${baseName}.html`, new TextEncoder().encode(html), 'text/html;charset=utf-8');
@@ -45,6 +58,19 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
             <FolderInput size={15} aria-hidden />
             {t('document.move')}
           </Menu.Item>
+          {hasDistinctOriginal(meta) && (
+            <Menu.Item className="menu-item" onSelect={() => void restoreOriginal(meta.id)} title={t('files.restoreOriginalHint')}>
+              <History size={15} aria-hidden />
+              {t('files.restoreOriginal')}
+            </Menu.Item>
+          )}
+          {session && (
+            <Menu.Item className="menu-item" onSelect={() => setEncodingOpen(true)}>
+              <Languages size={15} aria-hidden />
+              {t('encoding.menu', { encoding: encodingName(meta.encoding) })}
+            </Menu.Item>
+          )}
+          {session && markdown && <>
           <Menu.Separator className="menu-separator" />
           <Menu.Label className="menu-label">{t('document.export')}</Menu.Label>
           <Menu.Item className="menu-item" onSelect={exportMarkdown}>
@@ -59,6 +85,7 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
             <Printer size={15} aria-hidden />
             {t('document.print')}
           </Menu.Item>}
+          </>}
           <Menu.Separator className="menu-separator" />
           <Menu.Item className="menu-item menu-item-danger" onSelect={() => void trashDocument(meta.id)}>
             <Trash2 size={15} aria-hidden />
@@ -68,6 +95,7 @@ export function DocumentMenu({ meta, session }: { meta: DocumentMeta; session: D
       </Menu.Portal>
     </Menu.Root>
     {action && <LibraryDialog action={action} onClose={() => setAction(null)} />}
+    {encodingOpen && <EncodingDialog meta={meta} onClose={() => setEncodingOpen(false)} />}
     </>
   );
 }

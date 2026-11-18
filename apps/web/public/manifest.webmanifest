@@ -7,10 +7,73 @@
   "background_color": "#fbfbfc",
   "theme_color": "#5e6ad2",
   "icons": [
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
   ],
   "file_handlers": [
-    { "action": "/", "accept": { "text/markdown": [".md", ".markdown"] } }
+    {
+      "action": "/",
+      "accept": {
+        "text/markdown": [
+          ".md",
+          ".markdown",
+          ".mdown",
+          ".mkd"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "accept": {
+        "text/plain": [
+          ".txt",
+          ".log",
+          ".csv",
+          ".tsv",
+          ".json",
+          ".yaml",
+          ".yml",
+          ".toml",
+          ".ini",
+          ".xml",
+          ".js",
+          ".ts",
+          ".py",
+          ".rs",
+          ".go",
+          ".java",
+          ".c",
+          ".cpp",
+          ".h",
+          ".sh",
+          ".sql",
+          ".css"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "accept": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
+          ".docx"
+        ],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+          ".xlsx"
+        ],
+        "application/vnd.oasis.opendocument.spreadsheet": [
+          ".ods"
+        ],
+        "application/pdf": [
+          ".pdf"
+        ]
+      }
+    }
   ],
-  "launch_handler": { "client_mode": "focus-existing" }
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  }
 }

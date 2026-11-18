@@ -3,7 +3,6 @@ import { ACCENTS, usePreferences, type ContentWidth, type FontFamily, type Theme
 import { useServices } from '../services.tsx';
 import { Field, Modal, Switch } from './primitives.tsx';
 import { SyncSettings } from './SyncSettings.tsx';
-import { HistorySettings } from './HistorySettings.tsx';
 
 const LOCALE_NAMES: Record<Locale, string> = { en: 'English', ru: 'Русский' };
 
@@ -117,11 +116,6 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             </select>
           </Field>
           <Switch id="pref-html" label={t('settings.allowHtml')} checked={prefs.allowHtml} onChange={(v) => prefs.set({ allowHtml: v })} />
-        </section>
-
-        <section>
-          <h3 className="settings-heading">{t('history.title')}</h3>
-          <HistorySettings />
         </section>
 
         <section>

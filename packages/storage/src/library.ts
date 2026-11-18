@@ -2,7 +2,10 @@ import {
   AppError,
   compareNames,
   deriveTitle,
+  fileTitle,
+  fileTypeByMime,
   foldKey,
+  isFileDocument,
   sha256Hex,
   uuidv7,
   type DocumentMeta,
@@ -10,12 +13,9 @@ import {
   type Folder,
   type FolderRemote,
   type RemoteRef,
-  type Revision,
-  type RevisionReason,
 } from '@mdr/core';
-import type { Backend, Tx } from './backend.ts';
+import type { Backend, FileRow, Tx } from './backend.ts';
 import { SearchIndex, type SearchHit } from './search.ts';
-import { HISTORY_RETENTION_KEY, retainedRevisions, type HistoryRetention } from './retention.ts';
 
 interface ContentRow {
   hash: string;
@@ -26,16 +26,32 @@ export interface CreateDocumentInput {
   text: string;
   fileName: string;
   bom?: boolean;
+  /** WHATWG label of the file's encoding; omit for UTF-8. */
+  encoding?: string;
+  /** Original non-UTF-8 bytes, kept until the first edit for "Reopen with encoding". */
+  originalBytes?: Uint8Array;
   source?: DocumentSource;
   folderId?: string | null;
   tags?: string[];
   /** Server-assigned or client-chosen id (sync keeps ids identical on all devices). */
   id?: string;
   remote?: RemoteRef | null;
-  reason?: RevisionReason;
 }
 
-export type MetaPatch = Partial<Pick<DocumentMeta, 'title' | 'fileName' | 'folderId' | 'tags' | 'favorite' | 'openedAt' | 'source' | 'remote'>>;
+/** Input for a binary document (docx, xlsx, ods, pdf); see `detectFileType`. */
+export interface CreateFileInput {
+  bytes: Uint8Array;
+  /** Original of import when it differs from `bytes` (a synced, already edited document). */
+  originalBytes?: Uint8Array;
+  fileName: string;
+  mime: string;
+  folderId?: string | null;
+  tags?: string[];
+  id?: string;
+  remote?: RemoteRef | null;
+}
+
+export type MetaPatch = Partial<Pick<DocumentMeta, 'title' | 'fileName' | 'folderId' | 'tags' | 'favorite' | 'openedAt' | 'source' | 'remote' | 'encoding' | 'bom'>>;
 
 export interface SyncBase {
   documentId: string;
@@ -47,19 +63,16 @@ export type LibraryListener = (documentIds: string[]) => void;
 
 export interface LibraryOptions {
   libraryId?: string;
-  /** A new revision is cut when the head revision is older than this (ADR-002). */
-  revisionIntervalMs?: number;
   now?: () => number;
 }
 
 /**
- * Local library: documents, content-addressed text, revision history, folders and search.
- * Saves are compare-and-swap on the content hash, so a stale tab or device can never overwrite
- * newer text silently.
+ * Local library: documents, content-addressed text and bytes, folders and search. Only the current
+ * content of each document is kept (no version history, ADR-008). Saves are compare-and-swap on the
+ * content hash, so a stale tab or device can never overwrite newer text silently.
  */
 export class Library {
   readonly libraryId: string;
-  private readonly revisionIntervalMs: number;
   private readonly now: () => number;
   private readonly index: SearchIndex | null;
   private indexReady: Promise<void> | null = null;
@@ -68,7 +81,6 @@ export class Library {
   constructor(private readonly backend: Backend, options: LibraryOptions = {}) {
     this.libraryId = options.libraryId ?? 'local';
     this.index = backend.search ? null : new SearchIndex();
-    this.revisionIntervalMs = options.revisionIntervalMs ?? 5 * 60_000;
     this.now = options.now ?? Date.now;
   }
 
@@ -102,6 +114,7 @@ export class Library {
     return this.backend.transaction(['documents', 'contents'], 'readonly', async (tx) => {
       const meta = await tx.get<DocumentMeta>('documents', id);
       if (!meta) throw new AppError('document.not_found', { id });
+      if (isFileDocument(meta)) throw new AppError('document.not_text', { id });
       const content = await tx.get<ContentRow>('contents', meta.contentHash);
       if (!content) throw new AppError('storage.failed', { id, reason: 'missing_content' });
       return { text: content.text, version: meta.contentHash, meta };
@@ -110,18 +123,9 @@ export class Library {
 
   async createDocument(input: CreateDocumentInput): Promise<DocumentMeta> {
     const hash = await sha256Hex(input.text);
+    const original = input.originalBytes ? { hash: await sha256Hex(input.originalBytes), bytes: input.originalBytes } : null;
     const now = this.iso();
     const id = input.id ?? uuidv7(this.now());
-    const revision: Revision = {
-      id: uuidv7(this.now()),
-      documentId: id,
-      parentRevisionId: null,
-      contentHash: hash,
-      size: input.text.length,
-      authorId: null,
-      reason: input.reason ?? 'import',
-      createdAt: now,
-    };
     const meta: DocumentMeta = {
       id,
       libraryId: this.libraryId,
@@ -129,9 +133,10 @@ export class Library {
       title: deriveTitle(input.text, input.fileName) || input.fileName,
       fileName: input.fileName,
       source: input.source ?? { kind: 'imported' },
-      headRevisionId: revision.id,
       contentHash: hash,
       bom: input.bom ?? false,
+      ...(input.encoding && input.encoding !== 'utf-8' ? { encoding: input.encoding } : {}),
+      ...(original ? { importBytesHash: original.hash } : {}),
       tags: normalizeTags(input.tags ?? []),
       favorite: false,
       createdAt: now,
@@ -140,11 +145,11 @@ export class Library {
       deletedAt: null,
       remote: input.remote ?? null,
     };
-    await this.backend.transaction(['documents', 'contents', 'revisions', 'folders'], 'readwrite', async (tx) => {
+    await this.backend.transaction(['documents', 'contents', 'files', 'folders'], 'readwrite', async (tx) => {
       await this.requireFolder(tx, meta.folderId);
       if (await tx.get('documents', id)) throw new AppError('storage.failed', { id, reason: 'duplicate_id' });
       await tx.put<ContentRow>('contents', { hash, text: input.text });
-      await tx.put('revisions', revision);
+      if (original && !(await tx.get<FileRow>('files', original.hash))) await tx.put<FileRow>('files', { hash: original.hash, size: original.bytes.length, bytes: original.bytes });
       await tx.put('documents', meta);
     });
     this.index?.upsert(id, meta.title, input.text);
@@ -152,49 +157,136 @@ export class Library {
     return meta;
   }
 
+  /** Adds a binary document (docx, xlsx, ods, pdf). The caller validates the type (`detectFileType`). */
+  async createFileDocument(input: CreateFileInput): Promise<DocumentMeta> {
+    if (!fileTypeByMime(input.mime)) throw new AppError('file.unsupported', { mime: input.mime });
+    const hash = await sha256Hex(input.bytes);
+    const original = input.originalBytes ? { hash: await sha256Hex(input.originalBytes), bytes: input.originalBytes } : { hash, bytes: input.bytes };
+    const now = this.iso();
+    const id = input.id ?? uuidv7(this.now());
+    const meta: DocumentMeta = {
+      id,
+      libraryId: this.libraryId,
+      kind: 'file',
+      mime: input.mime,
+      folderId: input.folderId ?? null,
+      title: fileTitle(input.fileName),
+      fileName: input.fileName,
+      source: { kind: 'imported' },
+      contentHash: hash,
+      originalHash: original.hash,
+      bom: false,
+      tags: normalizeTags(input.tags ?? []),
+      favorite: false,
+      createdAt: now,
+      updatedAt: now,
+      openedAt: null,
+      deletedAt: null,
+      remote: input.remote ?? null,
+    };
+    await this.backend.transaction(['documents', 'files', 'folders'], 'readwrite', async (tx) => {
+      await this.requireFolder(tx, meta.folderId);
+      if (await tx.get('documents', id)) throw new AppError('storage.failed', { id, reason: 'duplicate_id' });
+      // Identical bytes are stored once; an existing row is already the same content.
+      if (!(await tx.get<FileRow>('files', hash))) await tx.put<FileRow>('files', { hash, size: input.bytes.length, bytes: input.bytes });
+      if (original.hash !== hash && !(await tx.get<FileRow>('files', original.hash))) {
+        await tx.put<FileRow>('files', { hash: original.hash, size: original.bytes.length, bytes: original.bytes });
+      }
+      await tx.put('documents', meta);
+    });
+    this.index?.upsert(id, meta.title, '');
+    this.emit(id);
+    return meta;
+  }
+
+  /** Original bytes of a non-UTF-8 text import that was not edited yet, or null. */
+  async readImportBytes(id: string): Promise<Uint8Array | null> {
+    return this.backend.transaction(['documents', 'files'], 'readonly', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta?.importBytesHash) return null;
+      return (await tx.get<FileRow>('files', meta.importBytesHash))?.bytes ?? null;
+    });
+  }
+
+  /**
+   * Replaces the bytes of a binary document if they are still `baseVersion` (compare-and-swap like
+   * `saveContent`). No history: the previous bytes go unless the original or another document uses
+   * them. Returns the new version (hash).
+   */
+  async saveFile(id: string, bytes: Uint8Array, baseVersion: string): Promise<string> {
+    const hash = await sha256Hex(bytes);
+    const now = this.iso();
+    await this.backend.transaction(['documents', 'files'], 'readwrite', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      if (!isFileDocument(meta)) throw new AppError('document.not_file', { id });
+      if (meta.contentHash !== baseVersion) {
+        throw new AppError('file.external_change', { id, expected: baseVersion, actual: meta.contentHash });
+      }
+      if (hash === baseVersion) return;
+      const previous = meta.contentHash;
+      if (!(await tx.get<FileRow>('files', hash))) await tx.put<FileRow>('files', { hash, size: bytes.length, bytes });
+      // Documents from before originals existed: their bytes so far are the original.
+      await tx.put('documents', { ...meta, originalHash: meta.originalHash ?? previous, contentHash: hash, updatedAt: now });
+      await this.dropContentIfUnreferenced(tx, previous, null, 'files');
+    });
+    this.emit(id);
+    return hash;
+  }
+
+  /** Original of import of a binary document (its first bytes). */
+  async readOriginal(id: string): Promise<{ bytes: Uint8Array; meta: DocumentMeta }> {
+    return this.backend.transaction(['documents', 'files'], 'readonly', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      if (!isFileDocument(meta)) throw new AppError('document.not_file', { id });
+      const row = await tx.get<FileRow>('files', meta.originalHash ?? meta.contentHash);
+      if (!row) throw new AppError('storage.failed', { id, reason: 'missing_original' });
+      return { bytes: row.bytes, meta };
+    });
+  }
+
+  /** Bytes of a binary document. Throws `document.not_file` for text documents. */
+  async readFile(id: string): Promise<{ bytes: Uint8Array; meta: DocumentMeta }> {
+    return this.backend.transaction(['documents', 'files'], 'readonly', async (tx) => {
+      const meta = await tx.get<DocumentMeta>('documents', id);
+      if (!meta) throw new AppError('document.not_found', { id });
+      if (!isFileDocument(meta)) throw new AppError('document.not_file', { id });
+      const row = await tx.get<FileRow>('files', meta.contentHash);
+      if (!row) throw new AppError('storage.failed', { id, reason: 'missing_content' });
+      return { bytes: row.bytes, meta };
+    });
+  }
+
   /**
    * Saves `text` if the stored version still equals `baseVersion`; otherwise throws
    * `file.external_change`. Returns the new version.
    */
-  async saveContent(id: string, text: string, baseVersion: string, reason: RevisionReason = 'edit'): Promise<string> {
+  async saveContent(id: string, text: string, baseVersion: string, options: { keepImportBytes?: boolean } = {}): Promise<string> {
     const hash = await sha256Hex(text);
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    const meta = await this.backend.transaction(['documents', 'contents', 'revisions'], 'readwrite', async (tx) => {
+    const now = this.iso();
+    const meta = await this.backend.transaction(['documents', 'contents', 'files'], 'readwrite', async (tx) => {
       const meta = await tx.get<DocumentMeta>('documents', id);
       if (!meta) throw new AppError('document.not_found', { id });
+      if (isFileDocument(meta)) throw new AppError('document.not_text', { id });
       if (meta.contentHash !== baseVersion) {
         throw new AppError('file.external_change', { id, expected: baseVersion, actual: meta.contentHash });
       }
       if (hash === baseVersion) return meta;
 
+      // Only the current text is kept: the previous one goes unless another document shares it.
+      const previous = meta.contentHash;
       await tx.put<ContentRow>('contents', { hash, text });
-      const head = await tx.get<Revision>('revisions', meta.headRevisionId);
-      const cutNew = !head || reason !== 'edit' || head.reason !== 'edit' || nowMs - Date.parse(head.createdAt) >= this.revisionIntervalMs;
-      if (cutNew) {
-        const revision: Revision = {
-          id: uuidv7(nowMs),
-          documentId: id,
-          parentRevisionId: head?.id ?? null,
-          contentHash: hash,
-          size: text.length,
-          authorId: null,
-          reason,
-          createdAt: now,
-        };
-        await tx.put('revisions', revision);
-        meta.headRevisionId = revision.id;
-      } else {
-        // Group rapid edits into the open head revision; its content row is replaced.
-        const previous = head.contentHash;
-        await tx.put('revisions', { ...head, contentHash: hash, size: text.length });
-        await this.dropContentIfUnreferenced(tx, previous, id);
-      }
       meta.contentHash = hash;
       meta.updatedAt = now;
       const title = deriveTitle(text, meta.fileName);
       if (title) meta.title = title;
+      // After the first edit the imported bytes no longer describe this document.
+      const importBytes = options.keepImportBytes ? undefined : meta.importBytesHash;
+      if (importBytes) delete meta.importBytesHash;
       await tx.put('documents', meta);
+      await this.dropContentIfUnreferenced(tx, previous, null);
+      if (importBytes) await this.dropContentIfUnreferenced(tx, importBytes, null, 'files');
       return meta;
     });
     this.index?.upsert(id, meta.title, text);
@@ -209,10 +301,16 @@ export class Library {
       if (!meta) throw new AppError('document.not_found', { id });
       if (patch.folderId !== undefined) await this.requireFolder(tx, patch.folderId);
       const next: DocumentMeta = { ...meta, ...patch, tags: patch.tags ? normalizeTags(patch.tags) : meta.tags };
+      // A binary document keeps its type's extension so it opens correctly everywhere.
+      const type = isFileDocument(meta) ? fileTypeByMime(meta.mime) : null;
+      if (type && patch.fileName !== undefined && !patch.fileName.toLowerCase().endsWith(type.extension)) {
+        next.fileName = `${patch.fileName}${type.extension}`;
+        patch = { ...patch, fileName: next.fileName };
+      }
       if (patch.fileName !== undefined && patch.title === undefined && patch.fileName !== meta.fileName) {
         // Without a heading the file name is the title, so a rename must show up in the list.
-        const content = await tx.get<ContentRow>('contents', meta.contentHash);
-        next.title = deriveTitle(content?.text ?? '', patch.fileName) || patch.fileName;
+        const content = isFileDocument(meta) ? undefined : await tx.get<ContentRow>('contents', meta.contentHash);
+        next.title = isFileDocument(meta) ? fileTitle(patch.fileName) : deriveTitle(content?.text ?? '', patch.fileName) || patch.fileName;
         if (next.title !== meta.title && meta.deletedAt === null) retitled = content?.text ?? '';
       }
       if (patch.title !== undefined || patch.fileName !== undefined || patch.folderId !== undefined || patch.tags !== undefined) {
@@ -236,21 +334,21 @@ export class Library {
 
   async restore(id: string): Promise<void> {
     await this.setDeleted(id, null);
-    const { text, meta } = await this.readContent(id);
-    this.index?.upsert(id, meta.title, text);
+    const meta = await this.getDocument(id);
+    this.index?.upsert(id, meta.title, isFileDocument(meta) ? '' : (await this.readContent(id)).text);
     this.emit(id);
   }
 
-  /** Permanently deletes a trashed document with all revisions and unreferenced contents. */
+  /** Permanently deletes a trashed document and its content unless another document shares it. */
   async purge(id: string): Promise<void> {
-    await this.backend.transaction(['documents', 'contents', 'revisions', 'syncBases'], 'readwrite', async (tx) => {
+    await this.backend.transaction(['documents', 'contents', 'files', 'syncBases'], 'readwrite', async (tx) => {
       const meta = await tx.get<DocumentMeta>('documents', id);
       if (!meta) return;
       if (meta.deletedAt === null) throw new AppError('storage.failed', { id, reason: 'not_trashed' });
-      const revisions = await tx.revisionsOf<Revision>(id);
       await tx.delete('documents', id);
-      for (const r of revisions) await tx.delete('revisions', r.id);
-      for (const hash of new Set(revisions.map((r) => r.contentHash))) await this.dropContentIfUnreferenced(tx, hash, null);
+      await this.dropContentIfUnreferenced(tx, meta.contentHash, null, isFileDocument(meta) ? 'files' : 'contents');
+      if (meta.importBytesHash) await this.dropContentIfUnreferenced(tx, meta.importBytesHash, null, 'files');
+      if (meta.originalHash && meta.originalHash !== meta.contentHash) await this.dropContentIfUnreferenced(tx, meta.originalHash, null, 'files');
       await tx.delete('syncBases', id);
     });
     this.index?.remove(id);
@@ -277,83 +375,6 @@ export class Library {
 
   async putSetting<T>(key: string, value: T | null): Promise<void> {
     await this.backend.transaction(['settings'], 'readwrite', (tx) => (value === null ? tx.delete('settings', key) : tx.put('settings', { key, value })));
-  }
-
-  async listRevisions(id: string): Promise<Revision[]> {
-    const revisions = await this.backend.transaction(['revisions'], 'readonly', (tx) => tx.revisionsOf<Revision>(id));
-    return revisions.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
-  }
-
-  async getHistoryRetention(): Promise<HistoryRetention> {
-    return (await this.getSetting<unknown>(HISTORY_RETENTION_KEY)) === 'balanced' ? 'balanced' : 'all';
-  }
-
-  async setHistoryRetention(policy: HistoryRetention): Promise<void> {
-    if (policy !== 'all' && policy !== 'balanced') throw new AppError('storage.failed');
-    await this.putSetting(HISTORY_RETENTION_KEY, policy);
-  }
-
-  /** Explicit maintenance only. A policy change alone never deletes history. */
-  async pruneHistory(): Promise<number> {
-    return this.backend.transaction(['settings', 'documents', 'revisions', 'contents'], 'readwrite', async (tx) => {
-      const policy = await tx.get<{ value: unknown }>('settings', HISTORY_RETENTION_KEY);
-      if (policy?.value !== 'balanced') return 0;
-      const docs = await tx.getAll<DocumentMeta>('documents');
-      const revisions = await tx.getAll<Revision>('revisions');
-      const byDocument = new Map<string, Revision[]>();
-      for (const revision of revisions) {
-        const group = byDocument.get(revision.documentId) ?? [];
-        group.push(revision);
-        byDocument.set(revision.documentId, group);
-      }
-      const removed = new Set<string>();
-      const hashes = new Set<string>();
-      for (const doc of docs) {
-        if (doc.deletedAt !== null) continue;
-        const group = byDocument.get(doc.id) ?? [];
-        const keep = retainedRevisions(group, doc.headRevisionId, this.now());
-        const byId = new Map(group.map((revision) => [revision.id, revision]));
-        for (const revision of group) {
-          if (!keep.has(revision.id)) {
-            await tx.delete('revisions', revision.id);
-            removed.add(revision.id);
-            hashes.add(revision.contentHash);
-          } else {
-            let parent = revision.parentRevisionId;
-            const visited = new Set([revision.id]);
-            while (parent && !keep.has(parent) && !visited.has(parent)) {
-              visited.add(parent);
-              parent = byId.get(parent)?.parentRevisionId ?? null;
-            }
-            if (parent && visited.has(parent)) parent = null;
-            if (parent !== revision.parentRevisionId) await tx.put('revisions', { ...revision, parentRevisionId: parent });
-          }
-        }
-      }
-      // Shared content remains while any document head or retained revision references it.
-      const referenced = new Set([...docs.map((doc) => doc.contentHash), ...revisions.filter((r) => !removed.has(r.id)).map((r) => r.contentHash)]);
-      for (const hash of hashes) if (!referenced.has(hash)) await tx.delete('contents', hash);
-      return removed.size;
-    });
-  }
-
-  async readRevision(revisionId: string, documentId?: string): Promise<string> {
-    return this.backend.transaction(['revisions', 'contents'], 'readonly', async (tx) => {
-      const revision = await tx.get<Revision>('revisions', revisionId);
-      if (!revision || (documentId !== undefined && revision.documentId !== documentId)) {
-        throw new AppError('document.not_found', { revisionId });
-      }
-      const content = await tx.get<ContentRow>('contents', revision.contentHash);
-      if (!content) throw new AppError('storage.failed', { revisionId, reason: 'missing_content' });
-      return content.text;
-    });
-  }
-
-  /** Restores an old revision as a *new* head revision; history is never rewritten. */
-  async restoreRevision(id: string, revisionId: string): Promise<string> {
-    const text = await this.readRevision(revisionId, id);
-    const { version } = await this.readContent(id);
-    return this.saveContent(id, text, version, 'restore');
   }
 
   async listFolders(options: { includeTrashed?: boolean } = {}): Promise<Folder[]> {
@@ -489,7 +510,8 @@ export class Library {
     this.indexReady ??= (async () => {
       const docs = await this.listDocuments();
       for (const doc of docs) {
-        const { text } = await this.readContent(doc.id);
+        // Binary documents are found by name only.
+        const text = isFileDocument(doc) ? '' : (await this.readContent(doc.id)).text;
         this.index?.upsert(doc.id, doc.title, text);
       }
     })();
@@ -522,13 +544,11 @@ export class Library {
     });
   }
 
-  private async dropContentIfUnreferenced(tx: Tx, hash: string, exceptDocument: string | null): Promise<void> {
-    // Contents are shared across documents (dedup), so check every revision and document head.
+  private async dropContentIfUnreferenced(tx: Tx, hash: string, exceptDocument: string | null, store: 'contents' | 'files' = 'contents'): Promise<void> {
+    // Contents are shared across documents (dedup), so check every reference of every document.
     const docs = await tx.getAll<DocumentMeta>('documents');
-    if (docs.some((d) => d.contentHash === hash && d.id !== exceptDocument)) return;
-    const revisions = await tx.getAll<Revision>('revisions');
-    if (revisions.some((r) => r.contentHash === hash)) return;
-    await tx.delete('contents', hash);
+    if (docs.some((d) => d.id !== exceptDocument && (d.contentHash === hash || d.importBytesHash === hash || d.originalHash === hash))) return;
+    await tx.delete(store, hash);
   }
 }
 

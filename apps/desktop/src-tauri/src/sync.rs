@@ -1,5 +1,5 @@
 use crate::{CmdResult, CommandError};
-use mavyn_native_sync::{Client, Request, Response, Vault};
+use mavyn_native_sync::{BinaryRequest, Client, Request, Response, Vault};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
@@ -117,4 +117,54 @@ pub async fn native_sync_request(
     })
     .await
     .map_err(|_| CommandError::new("network.failed"))?
+}
+
+/// Binary documents over the restricted native client: raw bytes in and out (no JSON/base64).
+/// Base URL, method, path and idempotency key travel in headers. The reply is framed as a
+/// big-endian u16 HTTP status followed by the response body.
+#[tauri::command]
+pub async fn native_sync_file(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> CmdResult<tauri::ipc::Response> {
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let base_url = header("x-mavyn-base").ok_or_else(|| CommandError::new("network.failed"))?;
+    let binary = BinaryRequest {
+        method: header("x-mavyn-method").ok_or_else(|| CommandError::new("network.failed"))?,
+        path: header("x-mavyn-path").ok_or_else(|| CommandError::new("network.failed"))?,
+        op_id: header("idempotency-key"),
+    };
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) if matches!(binary.method.as_str(), "POST" | "PUT") => {
+            Some(bytes.clone())
+        }
+        _ => None,
+    };
+    let host = app.state::<Arc<SyncHost>>().inner().clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        let client = host
+            .0
+            .lock()
+            .map_err(|_| CommandError::new("storage.failed"))?;
+        client
+            .request_bytes(
+                &base_url,
+                &binary,
+                body.as_deref(),
+                &NativeVault { _app: app },
+            )
+            .map_err(CommandError::new)
+    })
+    .await
+    .map_err(|_| CommandError::new("network.failed"))??;
+    let mut framed = Vec::with_capacity(response.body.len() + 2);
+    framed.extend_from_slice(&response.status.to_be_bytes());
+    framed.extend_from_slice(&response.body);
+    Ok(tauri::ipc::Response::new(framed))
 }

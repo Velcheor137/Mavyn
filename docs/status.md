@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-12 (large documents, file placement; see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
+Last updated: 2026-11-17 (editable docx/xlsx/ods, any text file, no version history; see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
 Node 22.23.0, Rust 1.93.1 and WebView2 157.0.4341.42. Earlier Debian/Docker results below
 are inherited platform checks, not reruns on this Windows machine.
 
@@ -12,7 +12,8 @@ are inherited platform checks, not reruns on this Windows machine.
   uses quoted AND-prefix queries and does not build a second JS text index on native.
 - Legacy webview IndexedDB migration is all-or-nothing into an empty SQLite database;
   the original is retained. Interruption/retry and nonempty-destination refusal are tested.
-- History settings default to keep-all. Explicit confirmed cleanup keeps 30 days of
+- (Superseded on 2026-11-17: version history was removed, see the last section.) History settings
+  defaulted to keep-all. Explicit confirmed cleanup kept 30 days of
   revisions plus daily snapshots for a year, protecting initial/head/trash/shared content.
 - Both native and web linked saves always compare content hashes, including equal
   file size/mtime. This is fingerprint protection, not an exclusive lock against other apps.
@@ -127,7 +128,7 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | Folder sync (2026-11-09) | `live.test.ts` against a compose server upgraded in place from the 0.1.2 image (migration 0002 on existing data): nested folders, folder rename/move, document rename/move, folder deletion mirrored between two devices; API test `folders_sync_names_locations_and_deletions` | ✅ live run + Rust API test |
 | Sync between devices (2026-11-08) | `live.test.ts` against the real compose server: two independent devices (own database and session) — create, merge of non-overlapping edits, conflict + keep mine, delete; plus browser ↔ second device both directions | ✅ live run |
 | Sync engine | 13 Vitest scenarios on an in-memory server: two devices, merge, conflicts and all resolutions, tombstones, lost responses (create/update), offline, restore on remote edit, re-linking | ✅ passing |
-| Rust crates + server | `cargo test --workspace` (19 tests incl. 10 API integration tests against PostgreSQL 15.13) and `cargo clippy --all-targets -D warnings` in `rust:1.95-bookworm` | ✅ passing |
+| Rust crates + server | `cargo test --workspace` (25 tests incl. 16 API integration tests against PostgreSQL 15.13: auth, ACL/IDOR, CAS, feed, search, folders, file documents) and `cargo clippy --all-targets -D warnings` in `rust:1.95-bookworm`, 2026-11-17 | ✅ passing |
 | Docker Compose stack (linux/amd64) | `docker compose up -d --build` from a clean checkout state; health checks; setup token from log → admin → login → library → Cyrillic document → search; server restart keeps data; web app + SPA fallback + security headers served | ✅ manual smoke test |
 | Tauri desktop — Linux | Frontend builds; Rust shell `cargo clippy -D warnings` + `cargo test` (atomic write) in a Debian container with WebKitGTK 4.1 | ✅ compiles · ⏳ **never launched** (no display), file dialogs/associations unverified, no bundle built |
 | Tauri desktop — Windows | MSVC x64 release cross-build, actual Windows/WebView2 UI: import, editor/tasks, SQLite/FTS5, folders, history, restart, linked saves/conflicts | ✅ executable and local-storage UI verified · ⏳ installers/associations/signing not tested |
@@ -142,7 +143,8 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 - Android SAF policy: 4 Kotlin/JUnit tests (access grants, equal-size conflicts, bounds/names, export MIME).
 - Native local-store: 10 Rust tests (leases, durable storage/rollback, FTS5, migration marker,
   schema protection, linked-file saving).
-- Rust: domain 3, server unit 6, API integration 10, desktop shell 1.
+- Rust: domain 3, server unit 6, API integration 16 (5 of them for file documents: upload/download,
+  hash/signature/size checks, ACL/IDOR, immutability, `files=1` opt-in, FK-replacement triggers), desktop shell 1.
 
 ## Phase progress (see plan.md)
 
@@ -152,8 +154,8 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 | 2 Design system + localization | Done for the web app: themes, accent, reading prefs, responsive layout, full en/ru, runtime switching |
 | 3 Markdown reader | Done: GFM, footnotes, emoji, math, Mermaid (zoom/pan/export SVG), callouts, Shiki, TOC, reading progress, lightbox. Relative local images: placeholder only on web |
 | 4 Editor + tasks | Done: reader/source/split, exact-source checkbox edits, undo/redo across autosave, stale-edit rejection, conflict banner |
-| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, revisions/diff/restore and explicit retention cleanup. Windows and Android emulator local-storage/SAF UI verified. Missing: physical Android devices/cloud providers and Linux GUI validation |
-| 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, folders, revisions, change feed, search, compose, web sign-in. Missing: attachments endpoints, user/member management UI |
+| 5 Local library | Partial: imported + linked files, nested folders, rename/move, tags/favorites/recents/trash, SQLite/FTS5 native engine, IndexedDB web store, no version history (removed 2026-11-17), any text file with its encoding, editable Word/Excel/OpenDocument files. Windows and Android emulator local-storage/SAF UI verified. Missing: physical Android devices/cloud providers and Linux GUI validation |
+| 6 Backend + Docker | Mostly done: auth, sessions, ACL, documents, folders, revisions, change feed, search, view-only file documents (`MAX_FILE_BYTES`), compose, web sign-in. Missing: attachments endpoints, user/member management UI |
 | 7 Sync + offline | Web ↔ server done (one library ↔ one local folder): incremental pull, CAS push, idempotent retries, three-way merge, conflict UI, tombstones, revoked access, sign-out. Missing: desktop/Android sync (bearer token in secure storage), attachments, QR-assisted connection, offline PWA verification |
 | 8 Polish | Partial: Markdown/HTML export and print stylesheet. Missing: PDF beyond print dialog, axe audit, measured performance budgets, Playwright E2E |
 
@@ -279,3 +281,105 @@ refresh may replace it. The heading-derived display title is unchanged by rename
 - Alt+N creates a document; renaming updates search titles.
 - Verification: Vitest 186 passing / 4 skipped, strict TypeScript, web production build;
   manual check in the built-in browser. Desktop/Android builds not run on devices.
+
+## View-only binary documents (docx, xlsx, ods, pdf) — 2026-11-17 (superseded by stage 2 below)
+
+- The library accepts docx, xlsx, ods and pdf as **file documents**: view-only, immutable (one
+  `import` revision, no history, no merge), searched by name only, up to 50 MiB, imported as an
+  independent copy (never linked to the original). Rename keeps the extension; tags, favorites,
+  folders and Trash work as for text. Download saves the original bytes. ADR-007 in
+  [architecture.md](architecture.md).
+- Viewers load on demand: docx-preview (page layout like Word, in a shadow root, cleaned of
+  scripts/iframes/forms/handlers/remote images, altChunk HTML disabled), SheetJS 0.20.3 from
+  cdn.sheetjs.com (sheet tabs, merged cells, 500-row steps, rendered by React from cell text),
+  pdf.js 6.5 (lazy pages, zoom, text layer; no XFA, no scripting).
+- Import and sync both run `detectFileType`: extension, size, signature and, for zip formats, the
+  central directory (entry count, unpacked size ≤ 300 MiB, ratio ≤ 200) before any parsing.
+- Storage: IndexedDB store `files` (DB version 3); native SQLite schema v2 with table
+  `files(hash, size, bytes)` (in-place upgrade from v1), bytes over raw Tauri IPC
+  (`local_store_file`), FTS5 by title. Android SAF/VIEW/SEND accept the four types (50 MiB limit
+  for them, 16 MiB for text); desktop picker and file associations (role Viewer) include them;
+  the PWA manifest registers file handlers.
+- Server (migration 0003): `file_blobs` in PostgreSQL, `POST /libraries/{id}/files` (raw body,
+  hash/signature/size checks, own 50 MiB body limit), `GET /documents/{id}/file` (octet-stream,
+  nosniff); files appear in changes/search only with `files=1`, so v0.1.x clients never see them.
+  Sync uploads once, downloads once (hash + type verified), then follows names, moves and
+  deletions. A cursor saved by an older client is re-read once from the start. Windows/Android
+  send these two requests as raw bytes through the restricted native client (`native_sync_file`).
+- Verification on Debian 13 (Docker rust:1.95-bookworm, postgres 15.13): strict TypeScript;
+  Vitest 221 passing / 1 skipped, including the shared Library suite through the real Rust SQLite
+  bridge; all local-store tests incl. new ones (files table, v1→v2 upgrade, title-only FTS), native-sync 4 tests
+  (binary route isolation, raw upload), server unit + 16 API tests with fmt and clippy
+  `-D warnings`; desktop Tauri crate Clippy (Linux) clean; web production build (viewers and
+  their libraries are separate lazy chunks). Manual check in the built-in browser against a local
+  compose stack: imported sample docx/xlsx/ods/pdf (`tests/fixtures/files`) rendered in light and
+  dark themes and at phone width (PDF fits to width); the docx `javascript:` link was neutralised
+  and no request reached the remote image; uploads reached the server byte-exact, the feed hid
+  files without `files=1`, and the download had `octet-stream` + `nosniff` and identical bytes.
+- Not verified: Windows/Android builds and devices (raw IPC `local_store_file` and
+  `native_sync_file` on Android WebView in particular), Kotlin policy tests (run in CI only),
+  a second real device downloading a synced file (covered by engine tests with the fake server
+  only), very large or complex real-world office files. Picking files on desktop/Android still
+  passes them to the webview as base64 (up to 50 MiB). PDF standard fonts that are not embedded
+  fall back to system fonts (pdf.js `standardFontDataUrl` not bundled).
+
+## Stage 2: editing files, any text file, no version history — 2026-11-17
+
+Released together with the view-only stage above (that stage never shipped on its own).
+
+- **No version history** anywhere: history panel, diff, restore and retention settings are gone;
+  saves replace the content. IndexedDB v4, SQLite schema v3 and server migration 0004 delete old
+  revisions and content only they referenced. Sync keeps one hidden merge base; "use server version"
+  now warns that local text is discarded; a linked file changed on disk and in Mavyn keeps the Mavyn
+  text as a copy.
+- **Any text file** (plain text, code, logs, configs, no extension): detected by content, encoding
+  detected (chardet) and written back unchanged, "Reopen/Save with encoding", syntax highlighting by
+  file name (CodeMirror language data), **New file…** with any name, CSV/TSV as an editable table.
+  Text limit 256 MiB (server `MAX_DOCUMENT_BYTES`, native sync, Android SAF); search indexes the first
+  256 KiB on the server and the first 4 Mi characters on devices. Merges above 24 Mi characters go to
+  the conflict banner.
+- **Editable files:** xlsx/ods spreadsheet editor (values, formulas via HyperFormula, rows/columns,
+  sheets, formatting, merges, sizes), docx editor (ProseMirror: text, character and paragraph
+  formatting, document styles, lists, tables, pictures; untouched blocks byte for byte), autosave,
+  copy on first edit when a file has content Mavyn cannot save, original of import with "Restore
+  original", file conflicts (open other version / keep mine / take theirs / keep both), linking
+  docx/xlsx/ods to files on disk. Server: `PUT /documents/{id}/file`, `GET …/original`, protocol 2
+  (v0.1.x clients refused), blob garbage collection.
+- **License:** GPL-3.0-only (HyperFormula). `LICENSE`, Cargo and package.json fields updated.
+- **Desktop** moves file bytes as raw IPC (picks, linked read/write, save as) instead of base64.
+
+Verified on Debian 13 (this machine, Docker `rust:1.95-bookworm`, PostgreSQL 15.13):
+
+- strict TypeScript; Vitest 228 passing / 4 skipped (encodings, sheets, docx, engine file conflicts,
+  rendered-app tests for code files, CSV table, xlsx and docx editing with autosave);
+- shared Library suite through the real Rust SQLite bridge (53 tests);
+- server: 18 API tests incl. file replace/CAS/original/blob GC, encodings, protocol 2, migration
+  0004; unit tests; fmt and clippy `-D warnings`;
+- local-store 12 tests (schema v1→v3), native-sync tests; fmt and clippy `-D warnings`;
+- desktop Tauri crate (Linux, WebKitGTK in Docker): clippy `-D warnings` and its test;
+- web production build (spreadsheet and Word editors in separate lazy chunks);
+- by hand in Chromium against the web dev server (local library, no server), with the fixtures and
+  a windows-1251 log: a windows-1251 file opens, is edited and downloads in windows-1251; code
+  highlighting (Python, Dockerfile); "New file…"; the encodings dialog; a `;` CSV as a table and as
+  text; xlsx and ods editing (typing into cells, formulas recalculated across sheets, bold, new
+  sheet), with the written zip checked (formulas with cached results, merges and styles kept); docx
+  typing with Enter and Ctrl+B, the saved file shown again in the exact view and its XML checked
+  (links, pictures, other parts kept); switching quickly between many file tabs. This found and
+  fixed four bugs: typing into a selected cell needed a key event (on-screen keyboards and IME
+  could not start an edit), the Word editor was recreated after the first edit (focus and typing
+  lost), ods kept a formula's old cached result when only its inputs changed, and after a tab
+  switch the next editor briefly got the previous file's bytes. Pictures in the Word editor no
+  longer disappear in development mode.
+
+Not verified:
+
+- file conflicts between two devices and linked office files were not tried by hand (engine and
+  jsdom tests only); touch input (the emulator sends mouse clicks), so the on-screen keyboard path
+  for cells is untested on a device;
+- Windows/Android builds and devices; Kotlin changes (SafPolicy, IncomingStore, linking office files)
+  were not compiled here (no Android toolchain) and run only in CI; Android still sends file bytes as
+  base64, so a 256 MiB text on a phone is a real memory risk;
+- real-world office files beyond the fixtures (complex styles, large sheets), LibreOffice/Word opening
+  the written files, 256 MiB texts end to end;
+- the advisory for `uuid` < 11.1.1 pulled in by ExcelJS (affects v3/v5/v6 with a buffer argument;
+  ExcelJS only calls `v4()`), left as is.

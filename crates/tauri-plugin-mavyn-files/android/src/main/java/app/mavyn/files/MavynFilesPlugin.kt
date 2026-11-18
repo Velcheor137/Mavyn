@@ -90,7 +90,7 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
                     SafPolicy.requireIncomingUri(uri.toString(), provider?.applicationInfo?.uid, android.os.Process.myUid())
                     val fileName = name(uri)
                     SafPolicy.requireName(fileName)
-                    incoming.put(fileName, read(uri))
+                    incoming.put(fileName, read(uri, SafPolicy.maxBytes(fileName)))
                 }
             } catch (error: Exception) {
                 val code = when (error) {
@@ -135,13 +135,13 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun read(uri: Uri): ByteArray = resolver.openInputStream(uri)?.use { input ->
+    private fun read(uri: Uri, limit: Int = SafPolicy.MAX_BYTES): ByteArray = resolver.openInputStream(uri)?.use { input ->
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(8192)
         while (true) {
             val count = input.read(buffer)
             if (count < 0) break
-            SafPolicy.requireSize(out.size().toLong() + count)
+            SafPolicy.requireSize(out.size().toLong() + count, limit)
             out.write(buffer, 0, count)
         }
         out.toByteArray()
@@ -195,8 +195,9 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
                 if (uri.scheme != "content") throw SafFailure("file.unsupported")
                 val fileName = name(uri)
                 SafPolicy.requireName(fileName)
-                val bytes = read(uri)
-                if (args.link) {
+                val bytes = read(uri, SafPolicy.maxBytes(fileName))
+                // PDF is view-only and always imported as a copy: never take a write grant for it.
+                if (args.link && !SafPolicy.isViewOnlyName(fileName)) {
                     val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                     if (flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION == 0) throw SafFailure("file.permission_denied")
                     resolver.takePersistableUriPermission(uri, flags)
@@ -279,8 +280,9 @@ class MavynFilesPlugin(private val activity: Activity) : Plugin(activity) {
             if (result.resultCode != Activity.RESULT_OK) throw SafFailure("storage.failed")
             val uri = result.data?.data ?: throw SafFailure("storage.failed")
             if (uri.scheme != "content") throw SafFailure("file.unsupported")
-            val bytes = Base64.decode(invoke.parseArgs(SaveArgs::class.java).bytesBase64, Base64.NO_WRAP)
-            SafPolicy.requireSize(bytes.size.toLong())
+            val saveArgs = invoke.parseArgs(SaveArgs::class.java)
+            val bytes = Base64.decode(saveArgs.bytesBase64, Base64.NO_WRAP)
+            SafPolicy.requireSize(bytes.size.toLong(), SafPolicy.maxBytes(saveArgs.name))
             resolver.openFileDescriptor(uri, "wt")?.use { descriptor ->
                 ParcelFileDescriptor.AutoCloseOutputStream(descriptor).use { it.write(bytes); it.flush() }
             } ?: throw FileNotFoundException()

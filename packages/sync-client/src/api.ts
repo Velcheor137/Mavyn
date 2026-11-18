@@ -10,8 +10,10 @@ import {
   type FolderInfo,
   type LibraryInfo,
   type MeResponse,
+  type ReplaceFileRequest,
   type UpdateContentRequest,
   type UpdateDocumentMetaRequest,
+  type UploadFileRequest,
   type UpdateFolderRequest,
   type UserInfo,
 } from './protocol.ts';
@@ -30,6 +32,13 @@ export interface SyncApi {
   changes(libraryId: string, cursor: string): Promise<ChangesResponse>;
   getDocument(id: string): Promise<DocumentWithContent>;
   createDocument(libraryId: string, request: CreateDocumentRequest, opId: string): Promise<DocumentInfo>;
+  /** Uploads an immutable binary document (docx, xlsx, ods, pdf) once. */
+  uploadFile(libraryId: string, request: UploadFileRequest, bytes: Uint8Array, opId: string): Promise<DocumentInfo>;
+  /** Bytes of a binary document. */
+  downloadFile(id: string): Promise<Uint8Array>;
+  /** Replaces an edited binary document's bytes (compare-and-swap on `base_revision_id`). */
+  replaceFile(id: string, request: ReplaceFileRequest, bytes: Uint8Array, opId: string): Promise<DocumentInfo>;
+  downloadOriginal(id: string): Promise<Uint8Array>;
   /** Rejects with `SyncHttpError` code `sync.conflict` (details: ConflictDetails) when the base is stale. */
   updateContent(id: string, request: UpdateContentRequest, opId: string): Promise<DocumentInfo>;
   /** Rename/move; fields whose base is stale keep the server value (see the returned info). */
@@ -65,6 +74,10 @@ const KNOWN: ReadonlySet<string> = new Set<ErrorCode>([
   'folder.not_found',
   'sync.conflict',
   'sync.protocol_unsupported',
+  'file.too_large',
+  'file.unsupported',
+  'document.not_text',
+  'document.not_file',
   'setup.invalid_token',
   'setup.already_completed',
   'user.weak_password',
@@ -95,9 +108,10 @@ export class HttpSyncApi implements SyncApi {
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
   ) {}
 
-  private async request<T>(method: string, path: string, body?: unknown, opId?: string): Promise<T> {
+  private async send(method: string, path: string, body?: unknown, opId?: string): Promise<Response> {
     const headers: Record<string, string> = { 'x-sync-protocol': String(PROTOCOL_VERSION) };
-    if (body !== undefined) headers['content-type'] = 'application/json';
+    const raw = body instanceof Uint8Array;
+    if (body !== undefined) headers['content-type'] = raw ? 'application/octet-stream' : 'application/json';
     if (method !== 'GET' && this.csrf) headers['x-csrf-token'] = this.csrf;
     if (opId) headers['idempotency-key'] = opId;
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1${path}`, {
@@ -105,20 +119,30 @@ export class HttpSyncApi implements SyncApi {
       headers,
       credentials: 'same-origin',
       cache: 'no-store',
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(body === undefined ? {} : { body: raw ? (body as Uint8Array<ArrayBuffer>) : JSON.stringify(body) }),
     });
-    if (response.status === 204) return undefined as T;
-    let parsed: unknown = null;
-    try {
-      parsed = await response.json();
-    } catch {
-      // Non-JSON responses (proxy errors, HTML pages) are handled by the status check below.
-    }
     if (!response.ok) {
+      let parsed: unknown = null;
+      try {
+        parsed = await response.json();
+      } catch {
+        // Non-JSON responses (proxy errors, HTML pages) still fail with the HTTP status.
+      }
       const error = (parsed as ErrorBody | null)?.error;
       throw new SyncHttpError(response.status, error?.code ?? `http.${response.status}`, error?.details ?? null);
     }
-    return parsed as T;
+    return response;
+  }
+
+  private async request<T>(method: string, path: string, body?: unknown, opId?: string): Promise<T> {
+    const response = await this.send(method, path, body, opId);
+    if (response.status === 204) return undefined as T;
+    try {
+      return (await response.json()) as T;
+    } catch {
+      // Unchanged behaviour: a success without a JSON body reads as null.
+      return null as T;
+    }
   }
 
   async health(): Promise<boolean> {
@@ -172,6 +196,27 @@ export class HttpSyncApi implements SyncApi {
 
   createDocument(libraryId: string, request: CreateDocumentRequest, opId: string): Promise<DocumentInfo> {
     return this.request('POST', `/libraries/${encodeURIComponent(libraryId)}/documents`, request, opId);
+  }
+
+  uploadFile(libraryId: string, request: UploadFileRequest, bytes: Uint8Array, opId: string): Promise<DocumentInfo> {
+    const query = new URLSearchParams({ id: request.id, file_name: request.file_name, sha256: request.sha256, mime: request.mime });
+    if (request.folder_id !== null) query.set('folder_id', request.folder_id);
+    return this.request('POST', `/libraries/${encodeURIComponent(libraryId)}/files?${query}`, bytes, opId);
+  }
+
+  async downloadFile(id: string): Promise<Uint8Array> {
+    const response = await this.send('GET', `/documents/${encodeURIComponent(id)}/file`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  replaceFile(id: string, request: ReplaceFileRequest, bytes: Uint8Array, opId: string): Promise<DocumentInfo> {
+    const query = new URLSearchParams({ base_revision_id: request.base_revision_id, sha256: request.sha256 });
+    return this.request('PUT', `/documents/${encodeURIComponent(id)}/file?${query}`, bytes, opId);
+  }
+
+  async downloadOriginal(id: string): Promise<Uint8Array> {
+    const response = await this.send('GET', `/documents/${encodeURIComponent(id)}/original`);
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   updateContent(id: string, request: UpdateContentRequest, opId: string): Promise<DocumentInfo> {

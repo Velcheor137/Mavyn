@@ -7,7 +7,7 @@ fn call(store: &mut LocalStore, request: Value) -> Value {
 fn begin(store: &mut LocalStore, mode: &str) -> Value {
     call(
         store,
-        json!({"op":"begin","mode":mode,"stores":["documents","contents","revisions","folders","settings","handles","syncBases"]}),
+        json!({"op":"begin","mode":mode,"stores":["documents","contents","folders","settings","handles","syncBases"]}),
     )
 }
 fn put(store: &mut LocalStore, token: &Value, table: &str, value: Value) {
@@ -23,12 +23,6 @@ fn seed(store: &mut LocalStore) {
         &token,
         "contents",
         json!({"hash":"h","text":"# Ёжик\r\n\r\nСписок задач: Buy MILK 🦔"}),
-    );
-    put(
-        store,
-        &token,
-        "revisions",
-        json!({"id":"r","documentId":"d","contentHash":"h"}),
     );
     put(
         store,
@@ -56,16 +50,6 @@ fn commits_reopens_and_preserves_exact_text() {
             json!({"op":"get","token":token,"store":"contents","key":"h"})
         )["text"],
         "# Ёжик\r\n\r\nСписок задач: Buy MILK 🦔"
-    );
-    assert_eq!(
-        call(
-            &mut db,
-            json!({"op":"revisions","token":token,"documentId":"d"})
-        )
-        .as_array()
-        .expect("array")
-        .len(),
-        1
     );
     call(&mut db, json!({"op":"commit","token":token}));
     drop(db);
@@ -190,7 +174,7 @@ fn refuses_newer_schema_without_replacing_existing_data() {
     std::fs::create_dir_all(&dir).expect("dir");
     let path = dir.join("library.sqlite3");
     let connection = rusqlite::Connection::open(&path).expect("open");
-    connection.execute_batch("CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('keep'); PRAGMA user_version=2;").expect("future schema");
+    connection.execute_batch("CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('keep'); PRAGMA user_version=4;").expect("future schema");
     drop(connection);
     assert_eq!(
         LocalStore::open(&path).err().expect("unsupported"),
@@ -226,5 +210,149 @@ fn closing_connection_rolls_back_uncommitted_writes() {
     let mut db = LocalStore::open(&path).expect("reopen");
     assert_eq!(call(&mut db, json!({"op":"status"}))["empty"], true);
     drop(db);
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+#[test]
+fn stores_binary_files_by_verified_hash_and_indexes_titles_only() {
+    let dir = std::env::temp_dir().join(format!("mavyn-files-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("library.sqlite3");
+    let bytes: Vec<u8> = (0..=255u8).cycle().take(70_000).collect();
+    let hash = sha256(&bytes);
+    {
+        let mut db = LocalStore::open(&path).expect("open");
+        let files = json!({"op":"begin","mode":"readwrite","stores":["documents","files"]});
+        let token = call(&mut db, files.clone());
+        let t = token.as_str().expect("token");
+        assert!(
+            db.put_file(t, "0".repeat(64).as_str(), &bytes).is_err(),
+            "hash must be verified"
+        );
+        db.put_file(t, &hash, &bytes).expect("put file");
+        db.put_file(t, &hash, &bytes).expect("idempotent");
+        assert!(db
+            .handle(json!({"op":"put","token":token,"store":"files","value":{"hash":hash}}))
+            .is_err());
+        put(
+            &mut db,
+            &token,
+            "documents",
+            json!({"id":"f","kind":"file","title":"Квартальный отчёт","fileName":"Квартальный отчёт.pdf","contentHash":hash,"deletedAt":null}),
+        );
+        call(&mut db, json!({"op":"commit","token":token}));
+
+        let token = call(
+            &mut db,
+            json!({"op":"begin","mode":"readonly","stores":["files"]}),
+        );
+        let t = token.as_str().expect("token");
+        assert!(db.put_file(t, &hash, &bytes).is_err(), "readonly");
+        assert_eq!(db.get_file(t, &hash).expect("get"), Some(bytes.clone()));
+        assert_eq!(db.get_file(t, "missing").expect("get"), None);
+        let all = call(&mut db, json!({"op":"all","token":token,"store":"files"}));
+        assert_eq!(all, json!([{"hash":hash,"size":70_000}]));
+        call(&mut db, json!({"op":"commit","token":token}));
+
+        let hits = call(
+            &mut db,
+            json!({"op":"search","terms":["квартал"],"limit":10}),
+        );
+        assert_eq!(hits[0]["documentId"], "f");
+        assert_eq!(hits[0]["text"], "");
+    }
+    {
+        // Survives reopening; schema v2 is current.
+        let mut db = LocalStore::open(&path).expect("reopen");
+        let token = call(
+            &mut db,
+            json!({"op":"begin","mode":"readwrite","stores":["files"]}),
+        );
+        let t = token.as_str().expect("token").to_owned();
+        assert_eq!(
+            db.get_file(&t, &hash).expect("get").map(|b| b.len()),
+            Some(70_000)
+        );
+        call(
+            &mut db,
+            json!({"op":"delete","token":token,"store":"files","key":hash}),
+        );
+        assert_eq!(db.get_file(&t, &hash).expect("get"), None);
+        call(&mut db, json!({"op":"commit","token":token}));
+    }
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn upgrades_schema_v1_in_place() {
+    let dir = std::env::temp_dir().join(format!("mavyn-v1-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("library.sqlite3");
+    {
+        let connection = rusqlite::Connection::open(&path).expect("v1");
+        connection.execute_batch("CREATE TABLE records(store TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL CHECK(json_valid(value)), PRIMARY KEY(store,key)) WITHOUT ROWID;
+            CREATE INDEX revisions_by_document ON records(json_extract(value,'$.documentId')) WHERE store='revisions';
+            CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE VIRTUAL TABLE search_index USING fts5(document_id UNINDEXED,title,body,tokenize='unicode61 remove_diacritics 2',prefix='2 3 4');
+            INSERT INTO records VALUES('settings','k','{\"key\":\"k\",\"value\":1}');
+            INSERT INTO records VALUES('documents','d','{\"id\":\"d\",\"contentHash\":\"head\"}');
+            INSERT INTO records VALUES('contents','head','{\"hash\":\"head\",\"text\":\"now\"}');
+            INSERT INTO records VALUES('contents','old','{\"hash\":\"old\",\"text\":\"before\"}');
+            INSERT INTO records VALUES('revisions','r1','{\"id\":\"r1\",\"documentId\":\"d\",\"contentHash\":\"old\"}');
+            PRAGMA user_version=1;").expect("seed v1");
+    }
+    let mut db = LocalStore::open(&path).expect("upgrade");
+    let token = call(
+        &mut db,
+        json!({"op":"begin","mode":"readonly","stores":["settings","files","contents"]}),
+    );
+    // v3: history is gone, and so is the text only an old revision referenced.
+    assert_eq!(
+        call(
+            &mut db,
+            json!({"op":"all","token":token,"store":"contents"})
+        ),
+        json!([{"hash":"head","text":"now"}])
+    );
+    assert_eq!(
+        call(
+            &mut db,
+            json!({"op":"get","token":token,"store":"settings","key":"k"})
+        )["value"],
+        1
+    );
+    assert_eq!(
+        call(&mut db, json!({"op":"all","token":token,"store":"files"})),
+        json!([])
+    );
+    call(&mut db, json!({"op":"commit","token":token}));
+    drop(db);
+    let version: i64 = rusqlite::Connection::open(&path)
+        .expect("open")
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .expect("version");
+    assert_eq!(version, 3);
+    let connection = rusqlite::Connection::open(&path).expect("open");
+    let leftovers: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM records WHERE store='revisions'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(leftovers, 0);
+    let index: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='revisions_by_document'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("index");
+    assert_eq!(index, 0);
     std::fs::remove_dir_all(dir).expect("cleanup");
 }
