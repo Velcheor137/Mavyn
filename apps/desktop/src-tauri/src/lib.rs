@@ -52,6 +52,34 @@ impl From<std::io::Error> for CommandError {
 
 type CmdResult<T> = Result<T, CommandError>;
 
+/// Bytes of a binary IPC request. Desktop webviews send them as the raw body; Android has no raw
+/// request bodies (Tauri's IPC goes through `postMessage` there and arrives as JSON), so the
+/// webview sends `{ "bytesBase64": "…" }` instead. When Tauri falls back to `postMessage` on
+/// desktop, a raw body arrives as a JSON array of byte values. A body without bytes is empty.
+fn body_bytes(body: &tauri::ipc::InvokeBody, error: &'static str) -> CmdResult<Vec<u8>> {
+    use base64::Engine;
+    use serde_json::Value;
+    match body {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        tauri::ipc::InvokeBody::Json(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|byte| u8::try_from(byte).ok())
+                    .ok_or_else(|| CommandError::new(error))
+            })
+            .collect(),
+        tauri::ipc::InvokeBody::Json(value) => match value.get("bytesBase64") {
+            None => Ok(Vec::new()),
+            Some(Value::String(text)) => base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .map_err(|_| CommandError::new(error)),
+            Some(_) => Err(CommandError::new(error)),
+        },
+    }
+}
+
 /// The path is fixed by setup; the webview can only send scoped store operations.
 #[tauri::command]
 async fn local_store(
@@ -85,10 +113,7 @@ async fn local_store_file(
         header("x-mavyn-token")?,
         header("x-mavyn-hash")?,
     );
-    let body = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
-        tauri::ipc::InvokeBody::Json(_) => Vec::new(),
-    };
+    let body = body_bytes(request.body(), "storage.failed")?;
     let storage = Arc::clone(storage.inner());
     let bytes = tauri::async_runtime::spawn_blocking(move || match op.as_str() {
         "putFile" => storage.put_file(&token, &hash, &body).map(|()| Vec::new()),

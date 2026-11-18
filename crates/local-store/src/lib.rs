@@ -441,7 +441,11 @@ impl LocalStore {
     pub fn put_file(&mut self, token: &str, hash: &str, bytes: &[u8]) -> Result<()> {
         self.expire_idle()?;
         self.check(token, Some(Store::Files), true)?;
-        if bytes.is_empty() || bytes.len() > MAX_FILE_BYTES {
+        // An empty body means the bytes were lost on the way, not that the file is too large.
+        if bytes.is_empty() {
+            return Err("storage.failed".into());
+        }
+        if bytes.len() > MAX_FILE_BYTES {
             return Err("file.too_large".into());
         }
         if hex::encode(Sha256::digest(bytes)) != hash {

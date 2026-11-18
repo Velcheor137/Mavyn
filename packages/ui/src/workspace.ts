@@ -363,22 +363,41 @@ export async function createDocument(title: string): Promise<void> {
  * show up where expected and, in a synced folder, reach the other devices. Linked files keep a
  * locator for in-place saving.
  */
-export async function addFiles(files: PickedFile[]): Promise<PickedFile[]> {
-  const { library } = svc();
+/**
+ * Where dropped files go: the open folder, unless a server library is connected and that folder is
+ * outside it — then the library's root folder, so the files are uploaded.
+ */
+export function dropPlacement(syncRoot: string | null): Placement {
   const placement = currentPlacement();
-  let lastId: string | null = null;
+  if (!syncRoot) return placement;
+  const byId = new Map(useWorkspace.getState().folders.map((f) => [f.id, f]));
+  for (let id = placement.folderId, depth = 0; id !== null && depth < 1000; depth++) {
+    if (id === syncRoot) return placement;
+    id = byId.get(id)?.parentId ?? null;
+  }
+  return { ...placement, folderId: syncRoot };
+}
+
+/**
+ * Imports files into the library and opens them: the last one by default, or each in its own tab
+ * (`openAll`, used for files dragged into the window).
+ */
+export async function addFiles(files: PickedFile[], options: { openAll?: boolean; placement?: Placement } = {}): Promise<PickedFile[]> {
+  const { library } = svc();
+  const placement = options.placement ?? currentPlacement();
+  const opened: string[] = [];
   const saved: PickedFile[] = [];
   for (const file of files) {
     try {
       const meta = await importPickedFile(library, file, placement);
       saved.push(file);
-      if (!meta.deletedAt) lastId = meta.id;
+      if (!meta.deletedAt) opened.push(meta.id);
     } catch (error) {
       notifyError(error);
     }
   }
   await refreshLibrary();
-  if (lastId) await openDocument(lastId);
+  for (const id of options.openAll ? opened : opened.slice(-1)) await openDocument(id);
   const folder = useWorkspace.getState().folders.find((f) => f.id === placement.folderId);
   if (saved.length && folder) notify('document.addedToFolder', 'info', { count: saved.length, folder: folder.name });
   return saved;

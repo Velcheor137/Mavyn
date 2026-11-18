@@ -1,10 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { AppError, type ErrorCode, type FileFingerprint } from '@mdr/core';
 import type { PickedFile, PlatformAdapter } from '@mdr/platform';
+import { ipcBody, toBase64 } from './ipc-bytes.ts';
 
 /**
  * Desktop hands bytes over as raw IPC payloads (`bytesToken` + `take_transfer`, raw request bodies);
- * Android still uses base64 inside JSON (its plugin bridge is JSON-only).
+ * Android uses base64 inside JSON; Linux sends raw bodies as base64 too (see ipc-bytes.ts).
  */
 interface NativePicked {
   importId?: string;
@@ -22,11 +23,6 @@ function fromBase64(b64: string): Uint8Array {
   return out;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
 
 /** Native commands reject with `{ code }` (see src-tauri/src/lib.rs). */
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -47,7 +43,7 @@ async function takeTransfer(token: string): Promise<Uint8Array> {
 async function callRaw<T>(command: string, args: Record<string, unknown>, bytes: Uint8Array): Promise<T> {
   const header = toBase64(new TextEncoder().encode(JSON.stringify(args)));
   try {
-    return await invoke<T>(command, bytes, { headers: { 'x-mavyn-args': header } });
+    return await invoke<T>(command, ipcBody(bytes), { headers: { 'x-mavyn-args': header } });
   } catch (error) {
     const code = (error as { code?: ErrorCode } | null)?.code;
     throw new AppError(code ?? 'unknown', { command }, error);

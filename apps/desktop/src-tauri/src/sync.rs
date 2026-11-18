@@ -140,11 +140,10 @@ pub async fn native_sync_file(
         path: header("x-mavyn-path").ok_or_else(|| CommandError::new("network.failed"))?,
         op_id: header("idempotency-key"),
     };
-    let body = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) if matches!(binary.method.as_str(), "POST" | "PUT") => {
-            Some(bytes.clone())
-        }
-        _ => None,
+    let body = if matches!(binary.method.as_str(), "POST" | "PUT") {
+        Some(crate::body_bytes(request.body(), "network.failed")?)
+    } else {
+        None
     };
     let host = app.state::<Arc<SyncHost>>().inner().clone();
     let response = tauri::async_runtime::spawn_blocking(move || {

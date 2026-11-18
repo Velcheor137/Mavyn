@@ -4,7 +4,8 @@ import { FilePlus2, FolderOpen, Maximize2, Minimize2, PanelLeft, PanelRight, X }
 import { useCallback, useEffect, useState, type DragEvent } from 'react';
 import { useMediaQuery } from '../hooks.ts';
 import { applyPreferences, usePreferences } from '../preferences.ts';
-import { addFiles, applyAutosaveDelay, closeTab, createDocument, cycleTab, dismissToast, flushAll, getSession, setTranslator, setViewMode, useWorkspace } from '../workspace.ts';
+import { useSync } from '../sync.ts';
+import { addFiles, applyAutosaveDelay, closeTab, createDocument, cycleTab, dismissToast, dropPlacement, flushAll, getSession, setTranslator, setViewMode, useWorkspace } from '../workspace.ts';
 import { DocumentView } from './DocumentView.tsx';
 import { OpenFilesDialog } from './OpenFilesDialog.tsx';
 import { NewFileDialog } from './NewFileDialog.tsx';
@@ -119,8 +120,11 @@ export function AppShell() {
     e.preventDefault();
     setDragging(false);
     // Any file: text is detected by content, office files by signature; others are reported.
+    // Each dropped file opens in its own tab and, with a server connected, is uploaded.
     const files = [...e.dataTransfer.files];
-    if (files.length) await addFiles(await Promise.all(files.map(fileToPicked)));
+    if (!files.length) return;
+    const picked = await Promise.all(files.map(fileToPicked));
+    await addFiles(picked, { openAll: true, placement: dropPlacement(useSync.getState().connection?.folderId ?? null) });
   };
 
   if (!ready) return <div className="h-full grid place-items-center muted">{t('app.loading')}</div>;

@@ -350,7 +350,7 @@ Released together with the view-only stage above (that stage never shipped on it
 
 Verified on Debian 13 (this machine, Docker `rust:1.95-bookworm`, PostgreSQL 15.13):
 
-- strict TypeScript; Vitest 228 passing / 4 skipped (encodings, sheets, docx, engine file conflicts,
+- strict TypeScript; Vitest 229 passing / 4 skipped (encodings, sheets, docx, engine file conflicts,
   rendered-app tests for code files, CSV table, xlsx and docx editing with autosave);
 - shared Library suite through the real Rust SQLite bridge (53 tests);
 - server: 18 API tests incl. file replace/CAS/original/blob GC, encodings, protocol 2, migration

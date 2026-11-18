@@ -112,10 +112,7 @@ fn raw_args<T: for<'de> Deserialize<'de>>(request: &tauri::ipc::Request<'_>) -> 
 }
 
 fn raw_body(request: &tauri::ipc::Request<'_>) -> CmdResult<Vec<u8>> {
-    match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
-        _ => Err(CommandError::new("edit.invalid_range")),
-    }
+    crate::body_bytes(request.body(), "edit.invalid_range")
 }
 
 fn read_picked(allowed: &Allowed, transfers: &Transfers, path: &Path) -> CmdResult<PickedFile> {

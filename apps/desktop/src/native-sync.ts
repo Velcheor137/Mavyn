@@ -3,6 +3,7 @@ import { AppError, type ErrorCode } from '@mdr/core';
 import { HttpSyncApi } from '@mdr/sync-client';
 import type { Library } from '@mdr/storage';
 import type { AppServices } from '@mdr/ui';
+import { ipcBody } from './ipc-bytes.ts';
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try { return await invoke<T>(command, args); }
@@ -17,7 +18,7 @@ async function binaryFetch(baseUrl: string, url: URL, init: RequestInit | undefi
   if (body !== undefined && body !== null && !(body instanceof Uint8Array)) throw new AppError('network.failed');
   let framed: ArrayBuffer;
   try {
-    framed = await invoke<ArrayBuffer>('native_sync_file', body ?? {}, {
+    framed = await invoke<ArrayBuffer>('native_sync_file', ipcBody(body ?? undefined), {
       headers: {
         'x-mavyn-base': baseUrl,
         'x-mavyn-method': init?.method ?? 'GET',

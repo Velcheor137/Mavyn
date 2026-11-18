@@ -10,7 +10,7 @@ import { render } from '@mdr/markdown-engine';
 import type { PlatformAdapter } from '@mdr/platform';
 import { Library, MemoryBackend, type LibraryOptions } from '@mdr/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppShell, DEFAULT_PREFERENCES, getSession, initWorkspace, openDocument, resetWorkspaceForTests, ServicesProvider, usePreferences, type AppServices } from './index.ts';
+import { AppShell, DEFAULT_PREFERENCES, getSession, initWorkspace, openDocument, resetSyncForTests, resetWorkspaceForTests, ServicesProvider, usePreferences, useSync, type AppServices } from './index.ts';
 
 const platform: PlatformAdapter = {
   kind: 'web',
@@ -349,6 +349,27 @@ describe('AppShell', () => {
     expect(await screen.findByText('File added to “Work”')).toBeInTheDocument();
     const list = screen.getAllByRole('list').find((l) => l.classList.contains('doc-list'))!;
     expect(within(list).getByText('Notes')).toBeInTheDocument();
+  });
+
+  it('opens each dropped file in its own tab and puts it in the synced library folder', async () => {
+    const { library } = await setup('# Existing\n');
+    const root = await library.createFolder('Server library');
+    await act(() => refreshLibrary());
+    useSync.setState({ connection: { serverId: 's', baseUrl: 'http://s', userId: 'u', username: 'u', libraryId: 'l', libraryName: 'Server library', folderId: root.id, cursor: '' } });
+    try {
+      const files = [new File(['# One\n'], 'one.md'), new File(['two'], 'two.txt')];
+      const app = document.querySelector('.app')!;
+      await act(async () => {
+        fireEvent.drop(app, { dataTransfer: { files, types: ['Files'] } });
+      });
+      await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(3));
+      expect(screen.getByRole('tab', { name: 'two.txt', selected: true })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'One' })).toBeInTheDocument();
+      const added = (await library.listDocuments()).filter((d) => d.fileName !== 'todo.md');
+      expect(added.map((d) => [d.fileName, d.folderId]).sort()).toEqual([['one.md', root.id], ['two.txt', root.id]]);
+    } finally {
+      resetSyncForTests();
+    }
   });
 
   it('downloads and trashes the open document from the toolbar, with undo', async () => {
