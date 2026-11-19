@@ -5,7 +5,8 @@ JSON over HTTPS. Wire types: `crates/sync-protocol/src/lib.rs`.
 **Authentication.** Native clients send `Authorization: Bearer <token>` from `POST /auth/login`.
 Browsers use the HttpOnly `__Host-mdr_session` cookie set by login; unsafe methods then also need
 `X-CSRF-Token: <csrf_token from login>` and, when `PUBLIC_ORIGIN` is configured, a matching
-`Origin`.
+`Origin`. Scripts and MCP clients use an **API key** (`Authorization: Bearer mvn_…`, see
+[API keys](#api-keys)); keys need no CSRF token.
 
 **Errors.** `{"error": {"code": "<stable code>", "details": {…}}}`. Clients localize by code
 (`crates/domain/src/lib.rs` → `codes`). Resources in libraries you are not a member of answer
@@ -38,6 +39,9 @@ that treated files as immutable) → `400 sync.protocol_unsupported` with `detai
 | `GET /auth/sessions` | any | Own active sessions |
 | `DELETE /auth/sessions/{id}` | any | Revoke one of own sessions |
 | `POST /users` | server admin | Create a user |
+| `GET /tokens` | server admin (session) | Own API keys that are still valid (never the key itself) |
+| `POST /tokens` | server admin (session) | `{name, access: "read"\|"write", can_delete, all_libraries, library_ids, expires_in_days: 30\|90\|365\|null}` → `201 {token, info}`; the key is shown only here |
+| `DELETE /tokens/{id}` | server admin (session) | Revoke one of own keys; it stops working at once |
 | `GET /libraries` | any | Libraries with the caller's role |
 | `POST /libraries` | any | `{name}`; caller becomes owner |
 | `GET /libraries/{id}/members` | viewer | Members |
@@ -46,9 +50,14 @@ that treated files as immutable) → `400 sync.protocol_unsupported` with `detai
 | `GET /libraries/{id}/documents` | viewer | Live documents (text and files) |
 | `POST /libraries/{id}/documents` | editor | `{id (client UUIDv7), file_name, content, folder_id?, encoding?}` |
 | `POST /libraries/{id}/files?id=&file_name=&folder_id=&sha256=&mime=` | editor | Raw body (`application/octet-stream`) → `201 DocumentInfo` of a file document; see below |
+| `POST /libraries/{id}/folders` | editor | `{id (client UUIDv7), parent_id, name}` |
+| `GET /folders/{id}` | viewer | Folder name and parent |
+| `PATCH /folders/{id}` | editor | Rename/move `{base_name, base_parent_id, name, parent_id}`, field-wise compare-and-swap; moves below itself are ignored |
+| `DELETE /folders/{id}` | editor | Soft-deletes the folder, its subfolders and their documents |
 | `GET /libraries/{id}/changes?cursor=&limit=` | viewer | Change feed incl. tombstones: `{documents, folders, cursor, has_more}` |
 | `GET /libraries/{id}/search?q=` | viewer | Prefix full-text search; snippets mark matches with `⟦…⟧`; files by title only |
 | `GET /documents/{id}` | viewer | Metadata + content; `409 document.not_text` for files |
+| `GET /documents/{id}/info` | viewer | Metadata of any document (text or file) without content: `head_revision_id`, `mime`, … |
 | `GET /documents/{id}/file` | viewer | Current file bytes: `Content-Type: application/octet-stream`, `X-Content-Type-Options: nosniff`, `Content-Length`; `409 document.not_file` for text |
 | `PUT /documents/{id}/file?base_revision_id=&sha256=` | editor | Raw body: new bytes of an edited file (same checks as the upload); `409 sync.conflict` with the current head if the base is stale; `409 document.not_file` for text |
 | `GET /documents/{id}/original` | viewer | The bytes the file was imported with (same headers as `…/file`) |
@@ -92,4 +101,43 @@ applies the same checks against the document's MIME type.
 Removed in protocol 2: `GET /documents/{id}/revisions` (no version history) and the `files=1` opt-in
 of the change feed and search.
 
-Not implemented yet: folders and attachments endpoints, blob upload by hash, QR pairing.
+## API keys
+
+Server administrators create keys for themselves in the web app (Settings → API keys) or with
+`POST /tokens` from a signed-in session. A key (`mvn_` + 43 characters) acts as its owner, capped by
+its own scope:
+
+- **libraries** — the chosen ones, or all of the owner's libraries including future ones; other
+  libraries answer `404 library.not_found` as if they did not exist;
+- **access** — `read` (at most the viewer role) or `write` (at most editor; never admin or owner,
+  even when the owner is one);
+- **delete** — `can_delete` (only with `write`) allows `DELETE /documents/{id}` and
+  `DELETE /folders/{id}`;
+- **expiry** — 30, 90 or 365 days, or none. A key also stops working when it is revoked or its
+  owner is no longer a server administrator.
+
+Keys never manage accounts, sessions, libraries, members or keys: those routes answer
+`403 token.forbidden`, as do writes beyond the key's access. Each key may make 600 requests a minute
+(`429 request.rate_limited`). The server stores only a SHA-256 of the key and the time it was last
+used. AI clients can also use a key over MCP: see [mcp.md](mcp.md).
+
+```bash
+KEY=mvn_…; S=https://notes.example/api/v1
+curl -H "Authorization: Bearer $KEY" $S/libraries
+curl -H "Authorization: Bearer $KEY" "$S/libraries/$LIB/changes?limit=1000"   # folders + documents
+curl -H "Authorization: Bearer $KEY" $S/documents/$DOC                        # text document
+curl -H "Authorization: Bearer $KEY" -o report.xlsx $S/documents/$DOC/file    # file bytes
+# upload a file
+curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/octet-stream" \
+  --data-binary @report.xlsx \
+  "$S/libraries/$LIB/files?id=$(uuidgen)&file_name=report.xlsx&sha256=$(sha256sum report.xlsx | cut -d' ' -f1)&mime=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+```
+
+| Status | Code | When |
+|---|---|---|
+| 401 | `auth.required` | Unknown, revoked or expired key, or its owner is no longer an administrator |
+| 403 | `token.forbidden` | Account, session, library-management or key routes; writing with a read key; deleting without `can_delete` |
+| 404 | `token.not_found` | `DELETE /tokens/{id}` for a key that is not yours or already revoked |
+| 429 | `request.rate_limited` | More than 600 requests a minute with one key |
+
+Not implemented yet: attachments endpoints, blob upload by hash, QR pairing, OAuth for MCP.

@@ -652,6 +652,26 @@ async fn send_file_blob(
     Ok((StatusCode::OK, headers, bytes).into_response())
 }
 
+/// Metadata of any document (text or file), without content: what scripts and MCP tools need
+/// before downloading or replacing a file (`head_revision_id`, `mime`).
+pub async fn info(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<DocInfo>> {
+    require_document_role(&state.db, &user, id, Role::Viewer).await?;
+    let row: DocRow = sqlx::query_as(&format!(
+        "SELECT {DOC_COLUMNS} FROM documents WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    if row.deleted_at.is_some() {
+        return Err(ApiError::not_found(codes::DOCUMENT_NOT_FOUND));
+    }
+    Ok(Json(row.into()))
+}
+
 pub async fn get(
     State(state): State<AppState>,
     user: AuthUser,
@@ -838,6 +858,7 @@ pub async fn delete(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    user.require_delete()?;
     require_document_role(&state.db, &user, id, Role::Editor).await?;
     sqlx::query("UPDATE documents SET deleted_at = now(), updated_at = now(), change_seq = nextval('change_seq') WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)

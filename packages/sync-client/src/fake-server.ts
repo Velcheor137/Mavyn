@@ -1,6 +1,7 @@
 import { sha256Hex, uuidv7 } from '@mdr/core';
-import { SyncHttpError, type SyncApi } from './api.ts';
+import { SyncHttpError, type SyncApi, type TokenApi } from './api.ts';
 import type {
+  ApiTokenInfo,
   ChangesResponse,
   ReplaceFileRequest,
   CreateDocumentRequest,
@@ -52,8 +53,10 @@ export class FakeServer {
   setupToken: string | null = null;
   /** When set, `me` answers 401 until `login` with this password succeeds (per client). */
   password: string | null = null;
+  /** API keys (admin only on the real server; the fake user is an admin). */
+  tokens: ApiTokenInfo[] = [];
 
-  client(): SyncApi {
+  client(): SyncApi & TokenApi {
     const guard = async <T>(fn: () => Promise<T>, op?: FakeServer['dropResponseOf']): Promise<T> => {
       if (this.offline) throw new TypeError('Failed to fetch');
       const result = await fn();
@@ -113,6 +116,31 @@ export class FakeServer {
       createFolder: (_lib, req) => guard(async () => this.createFolder(req)),
       updateFolder: (id, req) => guard(async () => this.updateFolder(id, req)),
       deleteFolder: (id) => guard(async () => this.deleteFolder(id)),
+      listTokens: () => guard(async () => this.tokens),
+      createToken: (request) =>
+        guard(async () => {
+          const token = `mvn_${uuidv7().replaceAll('-', '')}fake`;
+          const now = new Date();
+          const info: ApiTokenInfo = {
+            id: uuidv7(),
+            name: request.name,
+            hint: token.slice(-4),
+            access: request.access,
+            can_delete: request.can_delete,
+            all_libraries: request.all_libraries,
+            library_ids: request.library_ids,
+            created_at: now.toISOString(),
+            last_used_at: null,
+            expires_at: request.expires_in_days === null ? null : new Date(now.getTime() + request.expires_in_days * 86_400_000).toISOString(),
+          };
+          this.tokens = [info, ...this.tokens];
+          return { token, info };
+        }),
+      revokeToken: (id) =>
+        guard(async () => {
+          if (!this.tokens.some((t) => t.id === id)) throw new SyncHttpError(404, 'token.not_found', null);
+          this.tokens = this.tokens.filter((t) => t.id !== id);
+        }),
     };
   }
 

@@ -1,7 +1,10 @@
 import { AppError, type ErrorCode } from '@mdr/core';
 import {
   PROTOCOL_VERSION,
+  type ApiTokenInfo,
   type ChangesResponse,
+  type CreateApiTokenRequest,
+  type CreatedApiToken,
   type CreateDocumentRequest,
   type CreateFolderRequest,
   type DocumentInfo,
@@ -50,6 +53,20 @@ export interface SyncApi {
   deleteFolder(id: string): Promise<void>;
 }
 
+/**
+ * API keys of the signed-in server administrator. Only the web app manages them (from a session,
+ * never with a key), so native clients do not implement it.
+ */
+export interface TokenApi {
+  listTokens(): Promise<ApiTokenInfo[]>;
+  createToken(request: CreateApiTokenRequest): Promise<CreatedApiToken>;
+  revokeToken(id: string): Promise<void>;
+}
+
+export function hasTokenApi(api: SyncApi | undefined): api is SyncApi & TokenApi {
+  return !!api && typeof (api as Partial<TokenApi>).listTokens === 'function';
+}
+
 /** Error returned by the server: HTTP status plus its stable code. */
 export class SyncHttpError extends Error {
   constructor(
@@ -83,6 +100,8 @@ const KNOWN: ReadonlySet<string> = new Set<ErrorCode>([
   'user.weak_password',
   'user.invalid_username',
   'user.username_taken',
+  'token.forbidden',
+  'token.not_found',
 ]);
 
 /** Maps transport and server failures to client error codes. */
@@ -100,7 +119,7 @@ export function toSyncAppError(error: unknown): AppError {
  * Same-origin HTTP client for the web app: authenticates with the HttpOnly session cookie and
  * sends the session's CSRF token (read from `/auth/me`, never persisted) on unsafe requests.
  */
-export class HttpSyncApi implements SyncApi {
+export class HttpSyncApi implements SyncApi, TokenApi {
   private csrf: string | null = null;
 
   constructor(
@@ -241,6 +260,18 @@ export class HttpSyncApi implements SyncApi {
 
   deleteFolder(id: string): Promise<void> {
     return this.request('DELETE', `/folders/${encodeURIComponent(id)}`);
+  }
+
+  listTokens(): Promise<ApiTokenInfo[]> {
+    return this.request('GET', '/tokens');
+  }
+
+  createToken(request: CreateApiTokenRequest): Promise<CreatedApiToken> {
+    return this.request('POST', '/tokens', request);
+  }
+
+  revokeToken(id: string): Promise<void> {
+    return this.request('DELETE', `/tokens/${encodeURIComponent(id)}`);
   }
 }
 

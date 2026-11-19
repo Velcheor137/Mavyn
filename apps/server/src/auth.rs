@@ -12,15 +12,124 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// Prefix of API keys (`mvn_…`), so secret scanners and the extractor can tell them from sessions.
+pub const TOKEN_PREFIX: &str = "mvn_";
+
+/// Requests per minute one API key may make.
+pub const TOKEN_RATE_PER_MINUTE: u32 = 600;
+
+/// The ceiling an API key puts on its owner's library role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAccess {
+    Read,
+    Write,
+}
+
+impl TokenAccess {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TokenAccess::Read => "read",
+            TokenAccess::Write => "write",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(TokenAccess::Read),
+            "write" => Some(TokenAccess::Write),
+            _ => None,
+        }
+    }
+
+    /// Highest library role the key may use.
+    const fn cap(self) -> Role {
+        match self {
+            TokenAccess::Read => Role::Viewer,
+            TokenAccess::Write => Role::Editor,
+        }
+    }
+}
+
+/// What an API key may do on top of its owner's own rights.
+#[derive(Debug, Clone)]
+pub struct TokenScope {
+    pub token_id: Uuid,
+    pub access: TokenAccess,
+    pub can_delete: bool,
+    /// `None`: every library the owner is a member of.
+    pub libraries: Option<Vec<Uuid>>,
+}
+
+impl TokenScope {
+    pub fn allows_library(&self, library_id: Uuid) -> bool {
+        self.libraries
+            .as_ref()
+            .is_none_or(|ids| ids.contains(&library_id))
+    }
+}
+
+/// How a request authenticated: a sign-in session (browser cookie or app bearer) or an API key.
+#[derive(Debug, Clone)]
+pub enum Credential {
+    Session {
+        session_id: Uuid,
+        csrf_token: String,
+    },
+    Token(TokenScope),
+}
+
 /// An authenticated request. Browser (cookie) requests with unsafe methods must also carry the
-/// session's CSRF token and, when configured, a matching `Origin`.
+/// session's CSRF token and, when configured, a matching `Origin`. API keys never use cookies, so
+/// they need neither.
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,
-    pub session_id: Uuid,
     pub username: String,
     pub is_admin: bool,
-    pub csrf_token: String,
+    pub credential: Credential,
+}
+
+impl AuthUser {
+    /// The sign-in session; API keys get `403 token.forbidden` (account, key and membership
+    /// management stay with signed-in people).
+    pub fn session(&self) -> ApiResult<(Uuid, &str)> {
+        match &self.credential {
+            Credential::Session {
+                session_id,
+                csrf_token,
+            } => Ok((*session_id, csrf_token)),
+            Credential::Token(_) => Err(token_forbidden()),
+        }
+    }
+
+    pub fn token(&self) -> Option<&TokenScope> {
+        match &self.credential {
+            Credential::Token(scope) => Some(scope),
+            Credential::Session { .. } => None,
+        }
+    }
+
+    /// Deleting documents and folders: API keys need their "allow deletion" flag.
+    pub fn require_delete(&self) -> ApiResult<()> {
+        match self.token() {
+            Some(scope) if !scope.can_delete => Err(token_forbidden()),
+            _ => Ok(()),
+        }
+    }
+
+    /// The role this request may use in a library where the user is a `member`: capped by an API
+    /// key's access level, `None` for libraries outside the key's scope.
+    pub fn effective_role(&self, library_id: Uuid, member: Role) -> Option<Role> {
+        match self.token() {
+            None => Some(member),
+            Some(scope) if scope.allows_library(library_id) => Some(member.min(scope.access.cap())),
+            Some(_) => None,
+        }
+    }
+}
+
+pub fn token_forbidden() -> ApiError {
+    ApiError::new(StatusCode::FORBIDDEN, codes::TOKEN_FORBIDDEN)
 }
 
 #[derive(sqlx::FromRow)]
@@ -30,6 +139,70 @@ struct SessionRow {
     username: String,
     is_admin: bool,
     csrf_token: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct TokenRow {
+    token_id: Uuid,
+    access: String,
+    can_delete: bool,
+    all_libraries: bool,
+    stale: bool,
+    user_id: Uuid,
+    username: String,
+    is_admin: bool,
+}
+
+/// Resolves an API key. Valid while not revoked, not expired and while its owner is still a server
+/// administrator (only administrators hold keys). Rate limited per key.
+pub async fn authenticate_token(state: &AppState, token: &str) -> ApiResult<AuthUser> {
+    let row: Option<TokenRow> = sqlx::query_as(
+        "SELECT t.id AS token_id, t.access, t.can_delete, t.all_libraries,
+                (t.last_used_at IS NULL OR t.last_used_at < now() - interval '1 minute') AS stale,
+                u.id AS user_id, u.username, u.is_admin
+         FROM api_tokens t JOIN users u ON u.id = t.user_id
+         WHERE t.token_hash = $1 AND t.revoked_at IS NULL
+           AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.is_admin",
+    )
+    .bind(crypto::sha256(token.as_bytes()))
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or_else(ApiError::unauthorized)?;
+    let access = TokenAccess::parse(&row.access).ok_or_else(ApiError::internal)?;
+    if !state.token_limiter.check(&row.token_id.to_string()) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            codes::RATE_LIMITED,
+        ));
+    }
+    let libraries = if row.all_libraries {
+        None
+    } else {
+        Some(
+            sqlx::query_scalar("SELECT library_id FROM api_token_libraries WHERE token_id = $1")
+                .bind(row.token_id)
+                .fetch_all(&state.db)
+                .await?,
+        )
+    };
+    // Written at most once a minute per key, not on every request.
+    if row.stale {
+        sqlx::query("UPDATE api_tokens SET last_used_at = now() WHERE id = $1")
+            .bind(row.token_id)
+            .execute(&state.db)
+            .await?;
+    }
+    Ok(AuthUser {
+        user_id: row.user_id,
+        username: row.username,
+        is_admin: row.is_admin,
+        credential: Credential::Token(TokenScope {
+            token_id: row.token_id,
+            access,
+            can_delete: row.can_delete,
+            libraries,
+        }),
+    })
 }
 
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -43,7 +216,7 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v)
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()
@@ -60,6 +233,9 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let state = AppState::from_ref(state);
+        if let Some(token) = bearer(&parts.headers).filter(|t| t.starts_with(TOKEN_PREFIX)) {
+            return authenticate_token(&state, token).await;
+        }
         let (token, via_cookie) = match bearer(&parts.headers) {
             Some(token) => (token.to_owned(), false),
             None => match cookie_value(&parts.headers, state.config.cookie_name()) {
@@ -101,21 +277,27 @@ where
 
         Ok(AuthUser {
             user_id: row.user_id,
-            session_id: row.session_id,
             username: row.username,
             is_admin: row.is_admin,
-            csrf_token: row.csrf_token,
+            credential: Credential::Session {
+                session_id: row.session_id,
+                csrf_token: row.csrf_token,
+            },
         })
     }
 }
 
-/// Role of `user` in `library`. Non-members get `library.not_found` so library IDs cannot be probed.
+/// Role of `user` in `library`. Non-members get `library.not_found` so library IDs cannot be probed;
+/// so do libraries outside an API key's scope. An API key caps the role at its access level.
 pub async fn require_role(
     db: &PgPool,
     user: &AuthUser,
     library_id: Uuid,
     min: Role,
 ) -> ApiResult<Role> {
+    if user.token().is_some_and(|t| !t.allows_library(library_id)) {
+        return Err(ApiError::not_found(codes::LIBRARY_NOT_FOUND));
+    }
     let role: Option<String> = sqlx::query_scalar(
         "SELECT role FROM library_members WHERE library_id = $1 AND user_id = $2",
     )
@@ -125,9 +307,14 @@ pub async fn require_role(
     .await?;
     let role = role
         .and_then(|r| r.parse::<Role>().ok())
+        .and_then(|r| user.effective_role(library_id, r))
         .ok_or_else(|| ApiError::not_found(codes::LIBRARY_NOT_FOUND))?;
     if role < min {
-        return Err(ApiError::forbidden());
+        // A key without write access says so; a too-low membership role stays `auth.forbidden`.
+        return Err(match user.token() {
+            Some(t) if min > t.access.cap() => token_forbidden(),
+            _ => ApiError::forbidden(),
+        });
     }
     Ok(role)
 }
@@ -177,7 +364,8 @@ pub async fn require_folder_role(
     }
 }
 
-/// Fixed-window limiter for authentication attempts, keyed by client IP and by username.
+/// Fixed-window limiter: authentication attempts (keyed by client IP and by username) and API-key
+/// requests (keyed by key id).
 pub struct RateLimiter {
     window: Duration,
     max: u32,

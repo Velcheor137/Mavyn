@@ -1,6 +1,9 @@
 import { SUPPORTED_LOCALES, useTranslation, type Locale } from '@mdr/i18n';
 import { ACCENTS, usePreferences, type ContentWidth, type FontFamily, type ThemeMode, type ViewMode } from '../preferences.ts';
+import { hasTokenApi } from '@mdr/sync-client';
 import { useServices } from '../services.tsx';
+import { useSync } from '../sync.ts';
+import { ApiTokens } from './ApiTokens.tsx';
 import { Field, Modal, Switch } from './primitives.tsx';
 import { SyncSettings } from './SyncSettings.tsx';
 
@@ -9,7 +12,10 @@ const LOCALE_NAMES: Record<Locale, string> = { en: 'English', ru: 'Русски�
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange(open: boolean): void }) {
   const { t } = useTranslation();
   const prefs = usePreferences();
-  const { appVersion, platform } = useServices();
+  const { appVersion, platform, server } = useServices();
+  const user = useSync((state) => state.user);
+  // API keys are managed only on the website, by server administrators.
+  const tokenApi = platform.kind === 'web' && user?.is_admin && server && hasTokenApi(server.api) ? server.api : null;
 
   return (
     <Modal open={open} onOpenChange={onOpenChange} title={t('settings.title')} closeLabel={t('settings.close')} wide>
@@ -32,6 +38,13 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <h3 className="settings-heading">{t('sync.title')}</h3>
           <SyncSettings />
         </section>
+
+        {tokenApi && server && (
+          <section>
+            <h3 className="settings-heading">{t('apiKeys.title')}</h3>
+            <ApiTokens api={tokenApi} origin={server.baseUrl} />
+          </section>
+        )}
 
         <section>
           <h3 className="settings-heading">{t('settings.appearance')}</h3>

@@ -215,8 +215,9 @@ fn session_cookie(state: &AppState, value: &str, max_age: i64) -> HeaderValue {
 }
 
 pub async fn logout(State(state): State<AppState>, user: AuthUser) -> ApiResult<Response> {
+    let (session_id, _) = user.session()?;
     sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1")
-        .bind(user.session_id)
+        .bind(session_id)
         .execute(&state.db)
         .await?;
     Ok((
@@ -226,21 +227,23 @@ pub async fn logout(State(state): State<AppState>, user: AuthUser) -> ApiResult<
         .into_response())
 }
 
-pub async fn me(user: AuthUser) -> Json<MeResponse> {
-    Json(MeResponse {
+pub async fn me(user: AuthUser) -> ApiResult<Json<MeResponse>> {
+    let csrf_token = user.session()?.1.to_owned();
+    Ok(Json(MeResponse {
         user: UserInfo {
             id: user.user_id,
             username: user.username,
             is_admin: user.is_admin,
         },
-        csrf_token: user.csrf_token,
-    })
+        csrf_token,
+    }))
 }
 
 pub async fn list_sessions(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> ApiResult<Json<Vec<SessionInfo>>> {
+    let (session_id, _) = user.session()?;
     let rows: Vec<(Uuid, Option<String>, OffsetDateTime, OffsetDateTime)> = sqlx::query_as(
         "SELECT id, device_name, created_at, last_seen_at FROM sessions
          WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY last_seen_at DESC",
@@ -255,7 +258,7 @@ pub async fn list_sessions(
                 device_name,
                 created_at,
                 last_seen_at,
-                current: id == user.session_id,
+                current: id == session_id,
             })
             .collect(),
     ))
@@ -267,6 +270,7 @@ pub async fn revoke_session(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    user.session()?;
     let result = sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL")
         .bind(id)
         .bind(user.user_id)
@@ -284,6 +288,7 @@ pub async fn create_user(
     user: AuthUser,
     Json(body): Json<CreateUserRequest>,
 ) -> ApiResult<Response> {
+    user.session()?;
     if !user.is_admin {
         return Err(ApiError::forbidden());
     }

@@ -151,6 +151,25 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(FolderInfo::from(row))).into_response())
 }
 
+/// One folder (name and parent), for scripts and MCP tools that rename or move it.
+pub async fn get(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<FolderInfo>> {
+    require_folder_role(&state.db, &user, id, Role::Viewer).await?;
+    let row: FolderRow = sqlx::query_as(&format!(
+        "SELECT {FOLDER_COLUMNS} FROM folders WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    if row.deleted_at.is_some() {
+        return Err(ApiError::not_found(codes::FOLDER_NOT_FOUND));
+    }
+    Ok(Json(row.into()))
+}
+
 pub async fn update(
     State(state): State<AppState>,
     user: AuthUser,
@@ -206,6 +225,7 @@ pub async fn delete(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    user.require_delete()?;
     let (library_id, _) = require_folder_role(&state.db, &user, id, Role::Editor).await?;
     let mut tx = state.db.begin().await?;
     lock_library(&mut tx, library_id).await?;

@@ -15,6 +15,39 @@ export interface MeResponse extends UserInfo {
   csrf_token: string;
 }
 
+/** An API key (`GET /tokens`); the key itself appears only once, in {@link CreatedApiToken}. */
+export interface ApiTokenInfo {
+  id: string;
+  name: string;
+  /** Last four characters of the key. */
+  hint: string;
+  access: 'read' | 'write';
+  can_delete: boolean;
+  /** Every library of the owner, including future ones (`library_ids` is then empty). */
+  all_libraries: boolean;
+  library_ids: string[];
+  created_at: string;
+  last_used_at: string | null;
+  /** `null`: no expiry. */
+  expires_at: string | null;
+}
+
+export interface CreateApiTokenRequest {
+  name: string;
+  access: 'read' | 'write';
+  can_delete: boolean;
+  all_libraries: boolean;
+  library_ids: string[];
+  /** 30, 90 or 365; `null` for no expiry. */
+  expires_in_days: 30 | 90 | 365 | null;
+}
+
+export interface CreatedApiToken {
+  /** The key (`mvn_…`), shown once. */
+  token: string;
+  info: ApiTokenInfo;
+}
+
 export interface LibraryInfo {
   id: string;
   name: string;

@@ -57,6 +57,20 @@ impl Api {
         }
     }
 
+    fn with_state(state: AppState) -> Self {
+        Self { router: app(state) }
+    }
+
+    /// `POST /tokens` as `admin`; returns the key and its info.
+    async fn create_token(&self, admin: &str, body: Value) -> (String, Value) {
+        let r = self.post("/tokens", Some(admin), body).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+        (
+            r.body["token"].as_str().expect("token").to_owned(),
+            r.body["info"].clone(),
+        )
+    }
+
     async fn call(
         &self,
         method: Method,
@@ -1632,4 +1646,370 @@ async fn text_files_keep_their_encoding_and_are_titled_by_name(pool: PgPool) {
         (r.status, r.code()),
         (StatusCode::BAD_REQUEST, "request.invalid")
     );
+}
+
+fn token_body(access: &str, can_delete: bool, libraries: &[&str]) -> Value {
+    json!({
+        "name": "script",
+        "access": access,
+        "can_delete": can_delete,
+        "all_libraries": libraries.is_empty(),
+        "library_ids": libraries,
+        "expires_in_days": 90,
+    })
+}
+
+#[sqlx::test(migrator = "mdr_server::MIGRATOR")]
+async fn api_keys_are_created_by_admins_for_themselves_and_shown_once(pool: PgPool) {
+    let api = Api::new(pool.clone()).await;
+    let admin = api.bootstrap(&pool).await;
+    let bob = api.create_user(&admin, "bob").await;
+    let lib = api.create_library(&admin, "Notes").await;
+    let bob_lib = api.create_library(&bob, "Bob's").await;
+
+    let (key, info) = api
+        .create_token(&admin, token_body("read", false, &[&lib]))
+        .await;
+    assert!(key.starts_with("mvn_") && key.len() == 47, "{key}");
+    assert_eq!(info["hint"], key[key.len() - 4..]);
+    assert_eq!(info["library_ids"], json!([lib]));
+    assert!(info["expires_at"].is_string());
+    assert!(info["last_used_at"].is_null());
+
+    let listed = api.get("/tokens", &admin).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body.as_array().map(Vec::len), Some(1));
+    assert!(!listed.raw.windows(key.len()).any(|w| w == key.as_bytes()));
+
+    // Only server administrators, and never with a key.
+    let r = api
+        .post("/tokens", Some(&bob), token_body("read", false, &[]))
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "auth.forbidden")
+    );
+    for (method, path) in [
+        (Method::GET, "/tokens"),
+        (Method::GET, "/auth/me"),
+        (Method::GET, "/auth/sessions"),
+        (Method::POST, "/auth/logout"),
+    ] {
+        let r = api.call(method, path, Some(&key), None, &[]).await;
+        assert_eq!(
+            (r.status, r.code()),
+            (StatusCode::FORBIDDEN, "token.forbidden"),
+            "{path}"
+        );
+    }
+    let r = api
+        .post("/libraries", Some(&key), json!({ "name": "x" }))
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "token.forbidden")
+    );
+
+    // Invalid requests.
+    for body in [
+        json!({ "name": "x", "access": "read", "all_libraries": true, "expires_in_days": 7 }),
+        json!({ "name": "x", "access": "admin", "all_libraries": true, "expires_in_days": null }),
+        json!({ "name": "x", "access": "read", "can_delete": true, "all_libraries": true, "expires_in_days": null }),
+        json!({ "name": " ", "access": "read", "all_libraries": true, "expires_in_days": null }),
+        json!({ "name": "x", "access": "read", "all_libraries": false, "library_ids": [], "expires_in_days": null }),
+    ] {
+        let r = api.post("/tokens", Some(&admin), body.clone()).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    // A library the admin is not a member of.
+    let r = api
+        .post(
+            "/tokens",
+            Some(&admin),
+            token_body("read", false, &[&bob_lib]),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::NOT_FOUND, "library.not_found")
+    );
+
+    // Keys without expiry.
+    let mut body = token_body("write", true, &[]);
+    body["expires_in_days"] = Value::Null;
+    let (_, info) = api.create_token(&admin, body).await;
+    assert!(info["expires_at"].is_null());
+    assert_eq!(info["all_libraries"], true);
+}
+
+#[sqlx::test(migrator = "mdr_server::MIGRATOR")]
+async fn api_keys_are_capped_by_scope_access_and_delete_flag(pool: PgPool) {
+    let api = Api::new(pool.clone()).await;
+    let admin = api.bootstrap(&pool).await;
+    let lib = api.create_library(&admin, "A").await;
+    let other = api.create_library(&admin, "B").await;
+    let doc = api.create_doc(&admin, &lib, "# Hello").await;
+    let doc_id = doc["id"].as_str().expect("id");
+    let base = doc["head_revision_id"].as_str().expect("head");
+    let hidden = api.create_doc(&admin, &other, "# Hidden").await;
+    let hidden_id = hidden["id"].as_str().expect("id");
+
+    // Read-only key for library A.
+    let (read, _) = api
+        .create_token(&admin, token_body("read", false, &[&lib]))
+        .await;
+    let libs = api.get("/libraries", &read).await;
+    assert_eq!(
+        libs.body,
+        json!([{ "id": lib, "name": "A", "role": "viewer" }])
+    );
+    assert_eq!(
+        api.get(&format!("/documents/{doc_id}"), &read).await.body["content"],
+        "# Hello"
+    );
+    let info = api.get(&format!("/documents/{doc_id}/info"), &read).await;
+    assert_eq!(
+        (info.status, info.body["kind"].as_str()),
+        (StatusCode::OK, Some("text"))
+    );
+    let r = api
+        .get(&format!("/libraries/{other}/documents"), &read)
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::NOT_FOUND, "library.not_found")
+    );
+    let r = api.get(&format!("/documents/{hidden_id}"), &read).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::NOT_FOUND, "document.not_found")
+    );
+    let r = api
+        .put_content(&read, doc_id, base, "# Changed", None)
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "token.forbidden")
+    );
+    let bytes = pdf_bytes(64);
+    let r = api
+        .upload(
+            Some(&read),
+            &lib,
+            &Uuid::now_v7().to_string(),
+            "a.pdf",
+            PDF,
+            &bytes,
+            None,
+            "",
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "token.forbidden")
+    );
+
+    // Write key without deletion: edits, uploads and downloads, no CSRF needed; cannot delete.
+    let (write, _) = api
+        .create_token(&admin, token_body("write", false, &[]))
+        .await;
+    let r = api
+        .put_content(&write, doc_id, base, "# Changed", None)
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let file_id = Uuid::now_v7().to_string();
+    let r = api
+        .upload(
+            Some(&write),
+            &other,
+            &file_id,
+            "report.pdf",
+            PDF,
+            &bytes,
+            None,
+            "",
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let r = api.get(&format!("/documents/{file_id}/file"), &write).await;
+    assert_eq!(
+        (r.status, r.raw.as_slice()),
+        (StatusCode::OK, bytes.as_slice())
+    );
+    let info = api.get(&format!("/documents/{file_id}/info"), &write).await;
+    assert_eq!(info.body["mime"], PDF);
+    let folder = Uuid::now_v7();
+    let r = api
+        .post(
+            &format!("/libraries/{lib}/folders"),
+            Some(&write),
+            json!({ "id": folder, "name": "F" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    for path in [format!("/documents/{doc_id}"), format!("/folders/{folder}")] {
+        let r = api
+            .call(Method::DELETE, &path, Some(&write), None, &[])
+            .await;
+        assert_eq!(
+            (r.status, r.code()),
+            (StatusCode::FORBIDDEN, "token.forbidden"),
+            "{path}"
+        );
+    }
+
+    // With the delete flag.
+    let (deleter, _) = api
+        .create_token(&admin, token_body("write", true, &[&lib]))
+        .await;
+    for path in [format!("/documents/{doc_id}"), format!("/folders/{folder}")] {
+        let r = api
+            .call(Method::DELETE, &path, Some(&deleter), None, &[])
+            .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT, "{path}");
+    }
+    let r = api
+        .get(&format!("/documents/{doc_id}/info"), &deleter)
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    // Still bound to its libraries.
+    let r = api
+        .call(
+            Method::DELETE,
+            &format!("/documents/{file_id}"),
+            Some(&deleter),
+            None,
+            &[],
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::NOT_FOUND, "document.not_found")
+    );
+
+    // A key never exceeds its owner's role: a viewer membership stays read-only.
+    let bob = api.create_user(&admin, "bob").await;
+    let bob_lib = api.create_library(&bob, "Bob's").await;
+    let r = api
+        .call(
+            Method::PUT,
+            &format!("/libraries/{bob_lib}/members"),
+            Some(&bob),
+            Some(json!({ "username": "admin", "role": "viewer" })),
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.body);
+    let bob_doc = api.create_doc(&bob, &bob_lib, "# Bob").await;
+    let r = api
+        .put_content(
+            &write,
+            bob_doc["id"].as_str().expect("id"),
+            bob_doc["head_revision_id"].as_str().expect("head"),
+            "x",
+            None,
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "auth.forbidden")
+    );
+}
+
+#[sqlx::test(migrator = "mdr_server::MIGRATOR")]
+async fn api_keys_stop_working_when_revoked_expired_or_owner_loses_admin(pool: PgPool) {
+    let api = Api::new(pool.clone()).await;
+    let admin = api.bootstrap(&pool).await;
+    let (key, info) = api
+        .create_token(&admin, token_body("read", false, &[]))
+        .await;
+    assert_eq!(api.get("/libraries", &key).await.status, StatusCode::OK);
+    let used = api.get("/tokens", &admin).await;
+    assert!(used.body[0]["last_used_at"].is_string());
+
+    let id = info["id"].as_str().expect("id");
+    let r = api
+        .call(
+            Method::DELETE,
+            &format!("/tokens/{id}"),
+            Some(&admin),
+            None,
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        api.get("/libraries", &key).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(api.get("/tokens", &admin).await.body, json!([]));
+    let r = api
+        .call(
+            Method::DELETE,
+            &format!("/tokens/{id}"),
+            Some(&admin),
+            None,
+            &[],
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::NOT_FOUND, "token.not_found")
+    );
+
+    let (expired, _) = api
+        .create_token(&admin, token_body("read", false, &[]))
+        .await;
+    sqlx::query(
+        "UPDATE api_tokens SET expires_at = now() - interval '1 second' WHERE revoked_at IS NULL",
+    )
+    .execute(&pool)
+    .await
+    .expect("expire");
+    assert_eq!(
+        api.get("/libraries", &expired).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let (key, _) = api
+        .create_token(&admin, token_body("read", false, &[]))
+        .await;
+    sqlx::query("UPDATE users SET is_admin = false")
+        .execute(&pool)
+        .await
+        .expect("demote");
+    assert_eq!(
+        api.get("/libraries", &key).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    // A made-up key is just unauthorized.
+    let fake = format!("mvn_{}", crypto::random_token());
+    assert_eq!(
+        api.get("/libraries", &fake).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test(migrator = "mdr_server::MIGRATOR")]
+async fn api_keys_are_rate_limited(pool: PgPool) {
+    let mut state = AppState::new(pool.clone(), Config::for_tests());
+    state.token_limiter = std::sync::Arc::new(mdr_server::auth::RateLimiter::new(
+        3,
+        std::time::Duration::from_secs(60),
+    ));
+    let api = Api::with_state(state);
+    let admin = api.bootstrap(&pool).await;
+    let (key, _) = api
+        .create_token(&admin, token_body("read", false, &[]))
+        .await;
+    for _ in 0..3 {
+        assert_eq!(api.get("/libraries", &key).await.status, StatusCode::OK);
+    }
+    let r = api.get("/libraries", &key).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::TOO_MANY_REQUESTS, "request.rate_limited")
+    );
+    // Sessions are not affected.
+    assert_eq!(api.get("/libraries", &admin).await.status, StatusCode::OK);
 }

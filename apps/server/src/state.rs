@@ -9,6 +9,8 @@ pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
     pub auth_limiter: Arc<RateLimiter>,
+    /// Requests per API key.
+    pub token_limiter: Arc<RateLimiter>,
 }
 
 impl AppState {
@@ -17,6 +19,10 @@ impl AppState {
             db,
             config: Arc::new(config),
             auth_limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(300))),
+            token_limiter: Arc::new(RateLimiter::new(
+                crate::auth::TOKEN_RATE_PER_MINUTE,
+                Duration::from_secs(60),
+            )),
         }
     }
 }

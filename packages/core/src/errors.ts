@@ -42,6 +42,8 @@ export type ErrorCode =
   | 'user.weak_password'
   | 'user.invalid_username'
   | 'user.username_taken'
+  | 'token.forbidden'
+  | 'token.not_found'
   | 'network.failed'
   | 'unknown';
 

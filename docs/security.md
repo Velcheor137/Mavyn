@@ -14,6 +14,8 @@ offline for long periods. Report vulnerabilities privately to the maintainers.
 | Data loss | Compare-and-swap saves locally (IndexedDB), on files (fingerprint) and on the server (base revision) | storage, platform, session and API tests |
 | Passwords | Argon2id (19 MiB, t=2, p=1); constant work for unknown users | `crypto.rs` tests |
 | Sessions | 256-bit random tokens stored as SHA-256; revocable; expiry | `login_sessions_and_revocation` |
+| API keys | `mvn_` + 256-bit random keys, created only by server administrators for themselves, shown once and stored as SHA-256; scoped to chosen libraries, read or write (never above editor), optional delete; expiry or none; revocable; invalid when the owner stops being an administrator; never manage accounts, sessions, members or keys; 600 requests/min per key | `api_keys_*` in `apps/server/tests/api.rs` |
+| MCP endpoint | `/mcp` accepts only API keys (no cookies), refuses foreign `Origin`, calls the REST routes in-process so every check applies; office text extraction is time-, size- and panic-bounded | `apps/server/tests/mcp.rs`, `extract.rs` tests |
 | CSRF | Cookie requests need `X-CSRF-Token` + matching `Origin`; `SameSite=Lax`, `HttpOnly`, `Secure`, `__Host-` | `cookie_auth_requires_csrf_and_origin` |
 | Brute force | Per-IP and per-username login rate limits | `login_is_rate_limited` |
 | IDOR | Every library/document access resolves the library and checks membership; outsiders get 404 | `library_acl_prevents_idor_and_enforces_roles` |
@@ -29,6 +31,7 @@ offline for long periods. Report vulnerabilities privately to the maintainers.
 ## Known gaps
 
 - No account lockout notifications or 2FA.
-- In-memory rate limiter resets on restart and is per-instance.
+- In-memory rate limiters (login and API keys) reset on restart and are per-instance.
+- An API key is a bearer secret: anyone who has it acts with its scope until it expires or is revoked.
 - Offline copies of shared documents cannot be wiped remotely after access is revoked.
 - The standalone HTML export links KaTeX CSS from jsDelivr (pinned version); offline it falls back to MathML.

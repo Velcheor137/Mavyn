@@ -74,6 +74,48 @@ pub struct SessionInfo {
     pub current: bool,
 }
 
+/// An API key (`GET /tokens`). The key itself appears only in [`CreatedApiToken`].
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiTokenInfo {
+    pub id: Uuid,
+    pub name: String,
+    /// Last four characters of the key.
+    pub hint: String,
+    /// `"read"` or `"write"`.
+    pub access: String,
+    pub can_delete: bool,
+    /// Every library of the owner, including future ones; `library_ids` is then empty.
+    pub all_libraries: bool,
+    pub library_ids: Vec<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_used_at: Option<OffsetDateTime>,
+    /// `null`: no expiry.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateApiTokenRequest {
+    pub name: String,
+    pub access: String,
+    #[serde(default)]
+    pub can_delete: bool,
+    pub all_libraries: bool,
+    #[serde(default)]
+    pub library_ids: Vec<Uuid>,
+    /// 30, 90 or 365; `null` for no expiry.
+    pub expires_in_days: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreatedApiToken {
+    /// The key (`mvn_…`). Shown once; the server keeps only its hash.
+    pub token: String,
+    pub info: ApiTokenInfo,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
     pub username: String,

@@ -4,6 +4,8 @@ pub mod auth;
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod extract;
+pub mod mcp;
 pub mod routes;
 pub mod state;
 
@@ -12,7 +14,7 @@ use axum::handler::Handler;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use error::ApiError;
 use mdr_domain::codes;
@@ -56,7 +58,7 @@ async fn protocol_guard(request: Request, next: Next) -> Response {
 }
 
 pub fn app(state: AppState) -> Router {
-    use routes::{auth, documents, folders, libraries};
+    use routes::{auth, documents, folders, libraries, tokens};
     // JSON metadata everywhere; only routes carrying document text get the large limit. JSON escaping
     // can grow text (quotes, backslashes), so allow twice the size; `check_size` enforces the real one.
     let body_limit = 1024 * 1024;
@@ -71,6 +73,8 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/sessions", get(auth::list_sessions))
         .route("/auth/sessions/{id}", delete(auth::revoke_session))
         .route("/users", post(auth::create_user))
+        .route("/tokens", get(tokens::list).post(tokens::create))
+        .route("/tokens/{id}", delete(tokens::revoke))
         .route("/libraries", get(libraries::list).post(libraries::create))
         .route(
             "/libraries/{id}/members",
@@ -92,7 +96,9 @@ pub fn app(state: AppState) -> Router {
         .route("/libraries/{id}/folders", post(folders::create))
         .route(
             "/folders/{id}",
-            patch(folders::update).delete(folders::delete),
+            get(folders::get)
+                .patch(folders::update)
+                .delete(folders::delete),
         )
         .route("/libraries/{id}/changes", get(documents::changes))
         .route("/libraries/{id}/search", get(documents::search))
@@ -102,6 +108,7 @@ pub fn app(state: AppState) -> Router {
                 .patch(documents::update_meta)
                 .delete(documents::delete),
         )
+        .route("/documents/{id}/info", get(documents::info))
         .route(
             "/documents/{id}/content",
             put(documents::update_content.layer(text_limit)),
@@ -123,7 +130,12 @@ pub fn app(state: AppState) -> Router {
             HeaderValue::from_static("no-store"),
         ));
 
-    let mut router = Router::new().nest("/api/v1", api);
+    // MCP tools call the same API routes in-process (see `mcp`).
+    let mcp = mcp::router(state.clone(), api.clone().with_state(state.clone()));
+    let mut router = Router::new()
+        .nest("/api/v1", api)
+        .with_state(state.clone())
+        .merge(mcp);
     if let Some(dist) = &state.config.web_dist {
         let index = format!("{dist}/index.html");
         router = router.fallback_service(ServeDir::new(dist).fallback(ServeFile::new(index)));
@@ -148,5 +160,4 @@ pub fn app(state: AppState) -> Router {
             HeaderValue::from_static("DENY"),
         ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
 }

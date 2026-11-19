@@ -21,13 +21,14 @@ pub async fn list(
     .bind(user.user_id)
     .fetch_all(&state.db)
     .await?;
+    // An API key sees only the libraries in its scope, with its capped role.
     Ok(Json(
         rows.into_iter()
             .filter_map(|(id, name, role)| {
                 Some(LibraryInfo {
                     id,
                     name,
-                    role: role.parse().ok()?,
+                    role: user.effective_role(id, role.parse().ok()?)?,
                 })
             })
             .collect(),
@@ -39,6 +40,7 @@ pub async fn create(
     user: AuthUser,
     Json(body): Json<CreateLibraryRequest>,
 ) -> ApiResult<Response> {
+    user.session()?;
     let name = body.name.trim();
     if name.is_empty() || name.chars().count() > 200 {
         return Err(ApiError::bad_request("name"));
@@ -101,6 +103,7 @@ pub async fn put_member(
     Path(library_id): Path<Uuid>,
     Json(body): Json<AddMemberRequest>,
 ) -> ApiResult<StatusCode> {
+    user.session()?;
     let actor = require_role(&state.db, &user, library_id, Role::Admin).await?;
     if !actor.can_grant(body.role) {
         return Err(ApiError::forbidden());
@@ -145,6 +148,7 @@ pub async fn remove_member(
     user: AuthUser,
     Path((library_id, member_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<StatusCode> {
+    user.session()?;
     // Members may always leave; removing others needs a role that could have granted theirs.
     let actor = require_role(&state.db, &user, library_id, Role::Viewer).await?;
     let mut tx = state.db.begin().await?;

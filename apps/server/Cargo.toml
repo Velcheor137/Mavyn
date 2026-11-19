@@ -23,6 +23,14 @@ getrandom = "0.3"
 base64 = "0.22"
 unicode-normalization = "0.1"
 tracing = "0.1"
+# Text of docx/xlsx/ods/pdf for API and MCP readers (src/extract.rs). zip is pinned so calamine
+# does not pull a release younger than a couple of weeks.
+calamine = "0.38"
+zip = { version = "=9.2.3", default-features = false, features = ["deflate"] }
+quick-xml = "0.42"
+pdf-extract = "0.12"
+# MCP server (src/mcp.rs). Pinned: the SDK moves fast and a version should be a few weeks old.
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]

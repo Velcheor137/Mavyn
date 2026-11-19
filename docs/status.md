@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-11-17 (editable docx/xlsx/ods, any text file, no version history; see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
+Last updated: 2026-11-19 (API keys and the MCP server; see the last section). Current verification machine: Windows x64 with Ubuntu 26.04 WSL,
 Node 22.23.0, Rust 1.93.1 and WebView2 157.0.4341.42. Earlier Debian/Docker results below
 are inherited platform checks, not reruns on this Windows machine.
 
@@ -383,3 +383,43 @@ Not verified:
   the written files, 256 MiB texts end to end;
 - the advisory for `uuid` < 11.1.1 pulled in by ExcelJS (affects v3/v5/v6 with a buffer argument;
   ExcelJS only calls `v4()`), left as is.
+
+## API keys and MCP server — 2026-11-19
+
+- **API keys** (`mvn_…`): server administrators create them for themselves in the web app (Settings →
+  API keys, web only) with a library scope (chosen or all), read or write access, an optional delete
+  permission and an expiry of 30/90/365 days or none. Shown once, stored as SHA-256, revocable, dead
+  once the owner stops being an administrator, 600 requests/min per key, never allowed to manage
+  accounts, sessions, libraries, members or keys. Migration `0005_api_tokens.sql`; routes
+  `GET/POST /tokens`, `DELETE /tokens/{id}`; new read routes `GET /documents/{id}/info` and
+  `GET /folders/{id}`. The existing REST routes work with a key as they are ([api.md](api.md)).
+- **MCP server** at `/mcp` (Streamable HTTP, stateless, `rmcp` 3.8.0): 14 tools (list, search, read,
+  download, create/update text, upload/replace files, rename/move, folders, delete), filtered by the
+  key's access. Tools call the REST routes in-process with the caller's key. Office files are read as
+  extracted text (docx, xlsx, ods, pdf; `extract.rs` with calamine for xlsx, an own ODS reader,
+  pdf-extract) and written as whole files ([mcp.md](mcp.md)).
+
+Verified on Debian 13 (Docker `rust:1.95-bookworm`, PostgreSQL 15.13):
+
+- server: 22 API tests (4 new for keys: admin-only creation, scope and access caps, delete flag,
+  revocation/expiry/admin loss, rate limit), 3 MCP tests (key and Origin checks, tool list by
+  permission, a full read/edit session over text, docx, xlsx, ods and pdf, conflict, deletion),
+  14 unit tests (6 for text extraction incl. zip bomb and damaged files); fmt and clippy `-D warnings`;
+- strict TypeScript; Vitest 231 passing / 4 skipped, incl. 2 new tests for the API keys section
+  (visible only to administrators on the web, scope sent as chosen, key shown once with the MCP
+  command, revoke); one unrelated sync UI test timed out once under load and passed on reruns;
+  web production build;
+- by hand in Chromium against the web dev server and the server built from this tree: created a
+  key for one library with write and delete access in Settings → API keys (shown once, expiry
+  90 days), listed libraries and uploaded an xlsx with `curl`, `/auth/me` with the key refused
+  (`token.forbidden`), MCP `initialize`/`tools/list` (14 tools)/`list_documents`/`read_document`
+  (the xlsx as tables) /`create_document` with `curl`; both documents synced into the web app;
+  "last used" shown; revoking in the UI made REST and MCP answer 401. This found one bug, fixed:
+  the key form did not show a library created after Settings was opened.
+
+Not verified:
+
+- a real MCP client (Claude Code) against a deployed server (the JSON-RPC calls were made by hand);
+- text extraction on real-world office files beyond the fixtures (large sheets, scanned or encrypted
+  PDFs);
+- OAuth for MCP (claude.ai custom connectors) is not implemented.

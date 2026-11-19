@@ -173,3 +173,27 @@ Copies already on a device cannot be deleted remotely.
 
 In the Windows/Linux/Android apps, enter the server address in Settings → **Server**; the rest
 works the same. QR-code setup is not supported yet.
+
+
+## API keys and connecting Claude (MCP)
+
+A server administrator can create an **API key** for themselves so scripts and AI assistants can work
+with the documents on the server. This is only in the web app: Settings → **API keys** → *Create key*.
+
+- **Libraries** — all of them (including future ones) or only the chosen ones. The key cannot see
+  the others.
+- **Access** — *Read only* or *Read and write*. Deleting documents and folders is a separate checkbox.
+- **Expires** — in 30, 90 or 365 days, or never. You can revoke a key at any time; programs using it
+  lose access immediately.
+
+The key is shown **once** — copy it right away. It acts as you, so keep it like a password. Next to it
+is a ready-made command for Claude Code:
+
+```bash
+claude mcp add --transport http mavyn https://your-server/mcp --header "Authorization: Bearer mvn_…"
+```
+
+Claude Code then sees your libraries: it searches and reads documents (Word, Excel, OpenDocument and
+PDF as text), edits text documents, uploads and replaces whole files, creates and moves folders.
+Changes reach your devices on their next sync. The web version of claude.ai cannot connect this way
+yet. Your own scripts can use the same key with the HTTP API — see `docs/api.md`.

@@ -72,6 +72,9 @@ pub mod codes {
     pub const USERNAME_TAKEN: &str = "user.username_taken";
     pub const USER_NOT_FOUND: &str = "user.not_found";
     pub const SESSION_NOT_FOUND: &str = "session.not_found";
+    /// An API key used where only a signed-in session may act, or beyond the key's scope.
+    pub const TOKEN_FORBIDDEN: &str = "token.forbidden";
+    pub const TOKEN_NOT_FOUND: &str = "token.not_found";
     pub const LAST_OWNER: &str = "library.last_owner";
     pub const LIBRARY_NOT_FOUND: &str = "library.not_found";
     pub const DOCUMENT_NOT_FOUND: &str = "document.not_found";

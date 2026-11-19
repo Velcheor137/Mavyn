@@ -8,7 +8,7 @@ exclude = ["apps/desktop/src-tauri", "crates/local-store", "crates/tauri-plugin-
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-rust-version = "1.85"
+rust-version = "1.88"  # rmcp (MCP server) needs 1.88
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

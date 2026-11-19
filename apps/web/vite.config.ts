@@ -19,7 +19,8 @@ const domFree = Object.fromEntries(
 
 function apiProxy() {
   const target = process.env.MDR_API_PROXY;
-  return target ? { proxy: { '/api': { target, changeOrigin: false } } } : {};
+  // `/mcp` too, so the MCP command shown under Settings → API keys also works against the dev server.
+  return target ? { proxy: { '/api': { target, changeOrigin: false }, '/mcp': { target, changeOrigin: false } } } : {};
 }
 
 /** Serves/emits /theme-bootstrap.js from the single source in @mdr/ui. */
